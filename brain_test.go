@@ -135,45 +135,47 @@ func TestBrainFileReviews(t *testing.T) {
 	}
 	defer b.Close()
 
-	// No reviewed head initially.
-	if sha := b.FileReviewedHead("acme/web", 42, "src/main.go"); sha != "" {
-		t.Errorf("fresh: got %q, want empty", sha)
+	// No reviewed state initially.
+	if s := b.FileReviewedState("acme/web", 42, "src/main.go"); s.HeadSHA != "" {
+		t.Errorf("fresh: got head %q, want empty", s.HeadSHA)
 	}
 
-	// Record a review.
-	if err := b.SetFileReviewed("acme/web", 42, "src/main.go", "abc123"); err != nil {
+	// Record a review with head and base.
+	if err := b.SetFileReviewed("acme/web", 42, "src/main.go", "abc123", "base111"); err != nil {
 		t.Fatal(err)
 	}
-	if sha := b.FileReviewedHead("acme/web", 42, "src/main.go"); sha != "abc123" {
-		t.Errorf("after set: got %q, want abc123", sha)
+	s := b.FileReviewedState("acme/web", 42, "src/main.go")
+	if s.HeadSHA != "abc123" || s.BaseSHA != "base111" {
+		t.Errorf("after set: got head=%q base=%q, want abc123/base111", s.HeadSHA, s.BaseSHA)
 	}
 
-	// Update to a new head — should overwrite.
-	if err := b.SetFileReviewed("acme/web", 42, "src/main.go", "def456"); err != nil {
+	// Update to a new head+base — should overwrite.
+	if err := b.SetFileReviewed("acme/web", 42, "src/main.go", "def456", "base222"); err != nil {
 		t.Fatal(err)
 	}
-	if sha := b.FileReviewedHead("acme/web", 42, "src/main.go"); sha != "def456" {
-		t.Errorf("after update: got %q, want def456", sha)
+	s = b.FileReviewedState("acme/web", 42, "src/main.go")
+	if s.HeadSHA != "def456" || s.BaseSHA != "base222" {
+		t.Errorf("after update: got head=%q base=%q, want def456/base222", s.HeadSHA, s.BaseSHA)
 	}
 
 	// Different file should be independent.
-	if sha := b.FileReviewedHead("acme/web", 42, "other.go"); sha != "" {
-		t.Errorf("different file: got %q, want empty", sha)
+	if s := b.FileReviewedState("acme/web", 42, "other.go"); s.HeadSHA != "" {
+		t.Errorf("different file: got head %q, want empty", s.HeadSHA)
 	}
 
-	// AllFileReviewedHeads returns all entries for the PR.
-	if err := b.SetFileReviewed("acme/web", 42, "other.go", "ghi789"); err != nil {
+	// AllFileReviewedStates returns all entries for the PR.
+	if err := b.SetFileReviewed("acme/web", 42, "other.go", "ghi789", "base333"); err != nil {
 		t.Fatal(err)
 	}
-	heads := b.AllFileReviewedHeads("acme/web", 42)
-	if len(heads) != 2 {
-		t.Fatalf("all heads: got %d, want 2", len(heads))
+	states := b.AllFileReviewedStates("acme/web", 42)
+	if len(states) != 2 {
+		t.Fatalf("all states: got %d, want 2", len(states))
 	}
-	if heads["src/main.go"] != "def456" {
-		t.Errorf("all heads[src/main.go]: got %q, want def456", heads["src/main.go"])
+	if s := states["src/main.go"]; s.HeadSHA != "def456" || s.BaseSHA != "base222" {
+		t.Errorf("all states[src/main.go]: got head=%q base=%q", s.HeadSHA, s.BaseSHA)
 	}
-	if heads["other.go"] != "ghi789" {
-		t.Errorf("all heads[other.go]: got %q, want ghi789", heads["other.go"])
+	if s := states["other.go"]; s.HeadSHA != "ghi789" || s.BaseSHA != "base333" {
+		t.Errorf("all states[other.go]: got head=%q base=%q", s.HeadSHA, s.BaseSHA)
 	}
 
 	// Persists across reload.
@@ -182,8 +184,9 @@ func TestBrainFileReviews(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer b2.Close()
-	if sha := b2.FileReviewedHead("acme/web", 42, "src/main.go"); sha != "def456" {
-		t.Errorf("after reload: got %q, want def456", sha)
+	s = b2.FileReviewedState("acme/web", 42, "src/main.go")
+	if s.HeadSHA != "def456" || s.BaseSHA != "base222" {
+		t.Errorf("after reload: got head=%q base=%q", s.HeadSHA, s.BaseSHA)
 	}
 }
 

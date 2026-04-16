@@ -108,6 +108,10 @@ type filesLoadedMsg struct {
 	err   error
 }
 type prefetchDoneMsg struct{}
+type autoAdvanceMsg struct {
+	prKey        string
+	advancedFiles []string // file paths that were auto-caught-up
+}
 type blobLoadedMsg struct {
 	content string
 	err     error
@@ -116,6 +120,13 @@ type catchUpLoadedMsg struct {
 	path  string
 	files []FileChange // delta files from compare API
 	err   error
+}
+type diamondClassifiedMsg struct {
+	path    string
+	class   Class
+	diamond Diamond // file content at all 4 corners
+	patch   string  // the catch-up patch (f1→f2 or b2→f2 depending on view)
+	err     error
 }
 
 // --- model ---
@@ -153,7 +164,9 @@ type model struct {
 
 	// Catch-up diff state.
 	catchUpMode     bool   // true when showing only the delta since last review
-	catchUpOldHead  string // the head SHA we last reviewed at
+	catchUpOldHead  string // the head SHA we last reviewed at (f1)
+	catchUpOldBase  string // the base SHA we last reviewed at (b1)
+	catchUpClass    Class  // diff4 classification of the catch-up
 	catchUpPatch    string // the delta patch for the current file
 
 	// Note input state.
@@ -240,6 +253,65 @@ func loadFilesCmd(pr PR) tea.Cmd {
 	}
 }
 
+// autoAdvanceCmd checks each file in a PR for implicit review eligibility.
+// For files where the reviewer has marks but the PR hasn't changed since their
+// last review (b1==b2, f1==f2), it auto-advances the brain state. Runs in the
+// background so the UI stays responsive.
+func autoAdvanceCmd(brain *Brain, pr PR, files []FileChange) tea.Cmd {
+	return func() tea.Msg {
+		states := brain.AllFileReviewedStates(pr.Repo, pr.Number)
+		if len(states) == 0 {
+			return autoAdvanceMsg{prKey: prKey(pr.Repo, pr.Number)}
+		}
+
+		// For the no-rebase fast path (b1==b2), we can classify without
+		// fetching file content — just compare SHAs.
+		var advanced []string
+		for _, fc := range files {
+			s, ok := states[fc.Path]
+			if !ok || s.HeadSHA == "" {
+				continue // never reviewed
+			}
+			if s.HeadSHA == pr.HeadSHA && s.BaseSHA == pr.BaseSHA {
+				continue // already current
+			}
+
+			// Check if base changed (rebase). If so, we'd need to fetch
+			// content at all 4 corners — skip auto-advance for now.
+			if s.BaseSHA != pr.BaseSHA && s.BaseSHA != "" {
+				continue
+			}
+
+			// No rebase (b1==b2). Check if the file's hunk hashes changed.
+			// If the current hunks still match the old marks, the file
+			// content is effectively the same for review purposes.
+			hunks := parseHunks(fc.Patch)
+			marks := brain.HunkMarks(pr.Repo, pr.Number, fc.Path)
+			if len(hunks) == 0 {
+				// No hunks = no diff = auto-advance.
+				brain.SetFileReviewed(pr.Repo, pr.Number, fc.Path, pr.HeadSHA, pr.BaseSHA)
+				advanced = append(advanced, fc.Path)
+				continue
+			}
+
+			// If all current hunks are already marked (their content hashes
+			// match what the reviewer saw), auto-advance.
+			allMarked := true
+			for _, h := range hunks {
+				if !marks[h.Hash] {
+					allMarked = false
+					break
+				}
+			}
+			if allMarked {
+				brain.SetFileReviewed(pr.Repo, pr.Number, fc.Path, pr.HeadSHA, pr.BaseSHA)
+				advanced = append(advanced, fc.Path)
+			}
+		}
+		return autoAdvanceMsg{prKey: prKey(pr.Repo, pr.Number), advancedFiles: advanced}
+	}
+}
+
 func fetchOne(pr PR) filesLoadedMsg {
 	files, err := listPRFiles(pr.Repo, pr.Number)
 	if err != nil {
@@ -319,10 +391,10 @@ func (m *model) rebuildPRItems() {
 				it.summary = fmt.Sprintf("%d new", unseen)
 			}
 			// Check if any files need catch-up (PR head moved since last review).
-			reviewedHeads := m.brain.AllFileReviewedHeads(pr.Repo, pr.Number)
+			reviewedStates := m.brain.AllFileReviewedStates(pr.Repo, pr.Number)
 			catchUpCount := 0
 			for _, f := range files {
-				if old := reviewedHeads[f.Path]; old != "" && old != pr.HeadSHA {
+				if s := reviewedStates[f.Path]; s.HeadSHA != "" && (s.HeadSHA != pr.HeadSHA || s.BaseSHA != pr.BaseSHA) {
 					catchUpCount++
 				}
 			}
@@ -372,13 +444,13 @@ func (m *model) rebuildFileItems() {
 		savedPath = sel.fc.Path
 	}
 	files := m.prFiles[prKey(m.selectedPR.Repo, m.selectedPR.Number)]
-	reviewedHeads := m.brain.AllFileReviewedHeads(m.selectedPR.Repo, m.selectedPR.Number)
+	reviewedStates := m.brain.AllFileReviewedStates(m.selectedPR.Repo, m.selectedPR.Number)
 	var unseen, partial, seen []fileItem
 	for _, fc := range files {
 		status := m.brain.Status(m.selectedPR.Repo, m.selectedPR.Number, fc)
 		nc := m.brain.NoteCountForFile(m.selectedPR.Repo, m.selectedPR.Number, fc.Path)
-		oldHead := reviewedHeads[fc.Path]
-		catchUp := oldHead != "" && oldHead != m.selectedPR.HeadSHA
+		s := reviewedStates[fc.Path]
+		catchUp := s.HeadSHA != "" && (s.HeadSHA != m.selectedPR.HeadSHA || s.BaseSHA != m.selectedPR.BaseSHA)
 		fi := fileItem{fc: fc, status: status, noteCount: nc, needsCatchUp: catchUp}
 		switch status {
 		case StatusUnseen:
@@ -602,11 +674,13 @@ func (m *model) openFile(fc FileChange) tea.Cmd {
 	m.blobContent = ""
 	m.catchUpMode = false
 	m.catchUpOldHead = ""
+	m.catchUpOldBase = ""
+	m.catchUpClass = ClassB1B2F1F2
 	m.catchUpPatch = ""
 
-	// Check if this file was previously reviewed at an older head.
-	oldHead := m.brain.FileReviewedHead(m.selectedPR.Repo, m.selectedPR.Number, fc.Path)
-	needsCatchUp := oldHead != "" && oldHead != m.selectedPR.HeadSHA
+	// Check if this file was previously reviewed at an older head/base.
+	revState := m.brain.FileReviewedState(m.selectedPR.Repo, m.selectedPR.Number, fc.Path)
+	needsCatchUp := revState.HeadSHA != "" && (revState.HeadSHA != m.selectedPR.HeadSHA || revState.BaseSHA != m.selectedPR.BaseSHA)
 
 	m.currentHunks = parseHunks(fc.Patch)
 	m.currentMarks = m.brain.HunkMarks(m.selectedPR.Repo, m.selectedPR.Number, fc.Path)
@@ -618,15 +692,56 @@ func (m *model) openFile(fc FileChange) tea.Cmd {
 	var cmds []tea.Cmd
 
 	if needsCatchUp {
-		m.catchUpOldHead = oldHead
-		m.statusMsg = fmt.Sprintf("loading catch-up diff %s..%s", shortSHA(oldHead), shortSHA(m.selectedPR.HeadSHA))
+		m.catchUpOldHead = revState.HeadSHA
+		m.catchUpOldBase = revState.BaseSHA
 		repo := m.selectedPR.Repo
+		oldHead := revState.HeadSHA
+		oldBase := revState.BaseSHA
 		newHead := m.selectedPR.HeadSHA
+		newBase := m.selectedPR.BaseSHA
 		path := fc.Path
-		cmds = append(cmds, func() tea.Msg {
-			files, err := fetchCompare(repo, oldHead, newHead)
-			return catchUpLoadedMsg{path: path, files: files, err: err}
-		})
+		rebased := oldBase != newBase && oldBase != ""
+
+		if rebased {
+			// Rebase detected — fetch file at all 4 corners and classify.
+			m.statusMsg = fmt.Sprintf("classifying diamond (rebase %s→%s)", shortSHA(oldBase), shortSHA(newBase))
+			cmds = append(cmds, func() tea.Msg {
+				b1, _ := fetchFileAtRef(repo, path, oldBase)
+				f1, _ := fetchFileAtRef(repo, path, oldHead)
+				b2, _ := fetchFileAtRef(repo, path, newBase)
+				f2, _ := fetchFileAtRef(repo, path, newHead)
+				d := Diamond{B1: b1, F1: f1, B2: b2, F2: f2}
+				class := Classify(d, nil)
+				// Get the catch-up patch via compare for shown classes.
+				var patch string
+				if !class.Hidden() {
+					views := class.Views()
+					if len(views) > 0 {
+						// Fetch compare diff for the primary view's corners.
+						from := d.Get(views[0].From)
+						to := d.Get(views[0].To)
+						_ = from // We use the compare API for the patch.
+						_ = to
+					}
+					// Use compare API between old tip and new tip for the patch.
+					files, _ := fetchCompare(repo, oldHead, newHead)
+					for _, f := range files {
+						if f.Path == path {
+							patch = f.Patch
+							break
+						}
+					}
+				}
+				return diamondClassifiedMsg{path: path, class: class, diamond: d, patch: patch}
+			})
+		} else {
+			// No rebase — use compare API (fast path, b1==b2).
+			m.statusMsg = fmt.Sprintf("loading catch-up diff %s..%s", shortSHA(oldHead), shortSHA(newHead))
+			cmds = append(cmds, func() tea.Msg {
+				files, err := fetchCompare(repo, oldHead, newHead)
+				return catchUpLoadedMsg{path: path, files: files, err: err}
+			})
+		}
 	}
 
 	if fc.Blob != "" {
@@ -805,7 +920,7 @@ func (m *model) saveMarks() {
 	// Record the PR head SHA we're reviewing against so catch-up diffs
 	// know what version we last saw.
 	if m.selectedPR.HeadSHA != "" {
-		m.brain.SetFileReviewed(m.selectedPR.Repo, m.selectedPR.Number, m.selectedFile, m.selectedPR.HeadSHA)
+		m.brain.SetFileReviewed(m.selectedPR.Repo, m.selectedPR.Number, m.selectedFile, m.selectedPR.HeadSHA, m.selectedPR.BaseSHA)
 	}
 }
 
@@ -851,6 +966,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.rebuildFileItems()
 			m.files.Title = fmt.Sprintf("Files in %s#%d", msg.pr.Repo, msg.pr.Number)
 		}
+		// Kick off auto-advance for files that haven't changed since last review.
+		// This runs in the background and updates the brain without user action.
+		pr := msg.pr
+		files := msg.files
+		return m, autoAdvanceCmd(m.brain, pr, files)
+
+	case autoAdvanceMsg:
+		if len(msg.advancedFiles) > 0 {
+			m.rebuildPRItems()
+			if m.selectedPR != nil && prKey(m.selectedPR.Repo, m.selectedPR.Number) == msg.prKey {
+				m.rebuildFileItems()
+			}
+			m.statusMsg = fmt.Sprintf("✓ auto-caught-up %d files", len(msg.advancedFiles))
+		}
 		return m, nil
 
 	case catchUpLoadedMsg:
@@ -858,11 +987,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = "catch-up: " + msg.err.Error()
 			return m, nil
 		}
-		// Only apply if we're still looking at the same file.
 		if m.view != viewDiff || m.selectedFile != msg.path {
 			return m, nil
 		}
-		// Find whether this file changed in the compare delta.
+		// No-rebase fast path: b1==b2, classify based on whether file changed.
 		var deltaFC *FileChange
 		for _, f := range msg.files {
 			if f.Path == msg.path {
@@ -871,20 +999,61 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if deltaFC == nil || deltaFC.Patch == "" {
-			// File didn't change since last review — auto-caught-up.
+			// f1==f2 with b1==b2 → ClassB1B2__F1F2 (hidden, clean merge).
 			m.catchUpMode = false
-			m.statusMsg = fmt.Sprintf("✓ %s unchanged since %s — caught up", m.selectedFile, shortSHA(m.catchUpOldHead))
-			// Update the reviewed head to current so next visit is clean.
-			m.brain.SetFileReviewed(m.selectedPR.Repo, m.selectedPR.Number, m.selectedFile, m.selectedPR.HeadSHA)
+			m.catchUpClass = ClassB1B2__F1F2
+			m.statusMsg = fmt.Sprintf("✓ %s: %s (auto-caught-up)", m.selectedFile, ClassB1B2__F1F2)
+			m.brain.SetFileReviewed(m.selectedPR.Repo, m.selectedPR.Number, m.selectedFile, m.selectedPR.HeadSHA, m.selectedPR.BaseSHA)
 			return m, nil
 		}
-		// Switch to catch-up mode: show only the delta hunks.
+		// b1==b2, f1≠f2 → ClassB1B2 ("diff extension"), show f1→f2.
 		m.catchUpMode = true
+		m.catchUpClass = ClassB1B2
 		m.catchUpPatch = deltaFC.Patch
 		m.currentHunks = parseHunks(deltaFC.Patch)
 		m.currentMarks = m.brain.HunkMarks(m.selectedPR.Repo, m.selectedPR.Number, m.selectedFile)
 		m.hunkIdx = firstUnmarked(m.currentHunks, m.currentMarks)
-		m.statusMsg = fmt.Sprintf("catch-up: showing changes since %s  (d: full diff)", shortSHA(m.catchUpOldHead))
+		m.statusMsg = fmt.Sprintf("catch-up [%s]: f1→f2 since %s  (d: full diff)", ClassB1B2, shortSHA(m.catchUpOldHead))
+		m.redrawDiff()
+		m.jumpToCurrentHunk()
+		return m, nil
+
+	case diamondClassifiedMsg:
+		if msg.err != nil {
+			m.statusMsg = "classify: " + msg.err.Error()
+			return m, nil
+		}
+		if m.view != viewDiff || m.selectedFile != msg.path {
+			return m, nil
+		}
+		m.catchUpClass = msg.class
+
+		if msg.class.Hidden() {
+			// Nothing to show — auto-catch-up.
+			m.catchUpMode = false
+			label := msg.class.String()
+			if msg.class.IsForget() {
+				label = "FORGET — base absorbed feature"
+			}
+			m.statusMsg = fmt.Sprintf("✓ %s: %s (auto-caught-up)", m.selectedFile, label)
+			m.brain.SetFileReviewed(m.selectedPR.Repo, m.selectedPR.Number, m.selectedFile, m.selectedPR.HeadSHA, m.selectedPR.BaseSHA)
+			return m, nil
+		}
+
+		// Shown class — display the catch-up diff.
+		m.catchUpMode = true
+		if msg.patch != "" {
+			m.catchUpPatch = msg.patch
+			m.currentHunks = parseHunks(msg.patch)
+		}
+		m.currentMarks = m.brain.HunkMarks(m.selectedPR.Repo, m.selectedPR.Number, m.selectedFile)
+		m.hunkIdx = firstUnmarked(m.currentHunks, m.currentMarks)
+		views := msg.class.Views()
+		viewLabel := ""
+		if len(views) > 0 {
+			viewLabel = fmt.Sprintf("%s→%s", views[0].From, views[0].To)
+		}
+		m.statusMsg = fmt.Sprintf("catch-up [%s]: %s  (d: full diff)", msg.class, viewLabel)
 		m.redrawDiff()
 		m.jumpToCurrentHunk()
 		return m, nil
@@ -1051,7 +1220,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.currentHunks = parseHunks(m.catchUpPatch)
 					m.currentMarks = m.brain.HunkMarks(m.selectedPR.Repo, m.selectedPR.Number, fc.Path)
 					m.hunkIdx = firstUnmarked(m.currentHunks, m.currentMarks)
-					m.statusMsg = fmt.Sprintf("catch-up: changes since %s  (d: full diff)", shortSHA(m.catchUpOldHead))
+					m.statusMsg = fmt.Sprintf("catch-up [%s]: changes since %s  (d: full diff)", m.catchUpClass, shortSHA(m.catchUpOldHead))
 				}
 				m.redrawDiff()
 				m.jumpToCurrentHunk()
@@ -1234,7 +1403,7 @@ func (m model) View() string {
 				modeHint := ""
 				if m.catchUpOldHead != "" {
 					if m.catchUpMode {
-						modeHint = fmt.Sprintf("  [catch-up since %s]  d: full diff", shortSHA(m.catchUpOldHead))
+						modeHint = fmt.Sprintf("  [catch-up %s since %s]  d: full diff", m.catchUpClass, shortSHA(m.catchUpOldHead))
 					} else {
 						modeHint = "  [full diff]  d: catch-up"
 					}

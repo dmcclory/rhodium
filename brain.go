@@ -77,6 +77,7 @@ func LoadBrain() (*Brain, error) {
 			title    TEXT    NOT NULL,
 			author   TEXT    NOT NULL,
 			head_sha TEXT    NOT NULL,
+			base_sha TEXT    NOT NULL DEFAULT '',
 			body     TEXT    NOT NULL DEFAULT '',
 			PRIMARY KEY (repo, number)
 		);
@@ -95,6 +96,7 @@ func LoadBrain() (*Brain, error) {
 			pr_key      TEXT NOT NULL,
 			path        TEXT NOT NULL,
 			head_sha    TEXT NOT NULL,
+			base_sha    TEXT NOT NULL DEFAULT '',
 			reviewed_at TEXT NOT NULL DEFAULT (datetime('now')),
 			PRIMARY KEY (pr_key, path)
 		);
@@ -154,7 +156,7 @@ func (b *Brain) SetHunkMarks(repo string, pr int, path string, marks map[string]
 }
 
 func (b *Brain) CachedPRs() []PR {
-	rows, err := b.db.Query(`SELECT repo, number, title, author, head_sha, body FROM pr_cache`)
+	rows, err := b.db.Query(`SELECT repo, number, title, author, head_sha, base_sha, body FROM pr_cache`)
 	if err != nil {
 		return nil
 	}
@@ -162,7 +164,7 @@ func (b *Brain) CachedPRs() []PR {
 	var out []PR
 	for rows.Next() {
 		var p PR
-		if rows.Scan(&p.Repo, &p.Number, &p.Title, &p.Author, &p.HeadSHA, &p.Body) == nil {
+		if rows.Scan(&p.Repo, &p.Number, &p.Title, &p.Author, &p.HeadSHA, &p.BaseSHA, &p.Body) == nil {
 			out = append(out, p)
 		}
 	}
@@ -179,8 +181,8 @@ func (b *Brain) SetPRCache(prs []PR) error {
 		return err
 	}
 	for _, p := range prs {
-		if _, err := tx.Exec(`INSERT INTO pr_cache (repo, number, title, author, head_sha, body) VALUES (?, ?, ?, ?, ?, ?)`,
-			p.Repo, p.Number, p.Title, p.Author, p.HeadSHA, p.Body); err != nil {
+		if _, err := tx.Exec(`INSERT INTO pr_cache (repo, number, title, author, head_sha, base_sha, body) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			p.Repo, p.Number, p.Title, p.Author, p.HeadSHA, p.BaseSHA, p.Body); err != nil {
 			return err
 		}
 	}
@@ -284,40 +286,47 @@ func (b *Brain) Status(repo string, pr int, fc FileChange) FileStatus {
 	}
 }
 
-// SetFileReviewed records the PR head SHA at which a file was last reviewed.
-// Called alongside mark saves so we know what version the reviewer saw.
-func (b *Brain) SetFileReviewed(repo string, pr int, path, headSHA string) error {
+// FileReviewState holds the base and head SHAs at which a file was last reviewed.
+type FileReviewState struct {
+	HeadSHA string
+	BaseSHA string
+}
+
+// SetFileReviewed records the PR head and base SHAs at which a file was last
+// reviewed. Called alongside mark saves so we know what version the reviewer saw.
+func (b *Brain) SetFileReviewed(repo string, pr int, path, headSHA, baseSHA string) error {
 	key := prKey(repo, pr)
 	_, err := b.db.Exec(`
-		INSERT INTO file_reviews (pr_key, path, head_sha, reviewed_at)
-		VALUES (?, ?, ?, datetime('now'))
-		ON CONFLICT (pr_key, path) DO UPDATE SET head_sha = excluded.head_sha, reviewed_at = excluded.reviewed_at`,
-		key, path, headSHA)
+		INSERT INTO file_reviews (pr_key, path, head_sha, base_sha, reviewed_at)
+		VALUES (?, ?, ?, ?, datetime('now'))
+		ON CONFLICT (pr_key, path) DO UPDATE SET head_sha = excluded.head_sha, base_sha = excluded.base_sha, reviewed_at = excluded.reviewed_at`,
+		key, path, headSHA, baseSHA)
 	return err
 }
 
-// FileReviewedHead returns the PR head SHA the reviewer last saw for this file,
-// or "" if the file has never been reviewed.
-func (b *Brain) FileReviewedHead(repo string, pr int, path string) string {
+// FileReviewedState returns the head and base SHAs the reviewer last saw for
+// this file. Returns zero FileReviewState if the file has never been reviewed.
+func (b *Brain) FileReviewedState(repo string, pr int, path string) FileReviewState {
 	key := prKey(repo, pr)
-	var sha string
-	b.db.QueryRow(`SELECT head_sha FROM file_reviews WHERE pr_key = ? AND path = ?`, key, path).Scan(&sha)
-	return sha
+	var s FileReviewState
+	b.db.QueryRow(`SELECT head_sha, base_sha FROM file_reviews WHERE pr_key = ? AND path = ?`, key, path).Scan(&s.HeadSHA, &s.BaseSHA)
+	return s
 }
 
-// AllFileReviewedHeads returns every (path → head_sha) for a given PR.
-func (b *Brain) AllFileReviewedHeads(repo string, pr int) map[string]string {
+// AllFileReviewedStates returns every (path → FileReviewState) for a given PR.
+func (b *Brain) AllFileReviewedStates(repo string, pr int) map[string]FileReviewState {
 	key := prKey(repo, pr)
-	rows, err := b.db.Query(`SELECT path, head_sha FROM file_reviews WHERE pr_key = ?`, key)
+	rows, err := b.db.Query(`SELECT path, head_sha, base_sha FROM file_reviews WHERE pr_key = ?`, key)
 	if err != nil {
 		return nil
 	}
 	defer rows.Close()
-	out := map[string]string{}
+	out := map[string]FileReviewState{}
 	for rows.Next() {
-		var p, sha string
-		if rows.Scan(&p, &sha) == nil {
-			out[p] = sha
+		var p string
+		var s FileReviewState
+		if rows.Scan(&p, &s.HeadSHA, &s.BaseSHA) == nil {
+			out[p] = s
 		}
 	}
 	return out

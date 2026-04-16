@@ -14,6 +14,7 @@ type PR struct {
 	Title   string
 	Author  string
 	HeadSHA string
+	BaseSHA string
 	Body    string
 }
 
@@ -21,6 +22,7 @@ type prListItem struct {
 	Number     int    `json:"number"`
 	Title      string `json:"title"`
 	HeadRefOid string `json:"headRefOid"`
+	BaseRefOid string `json:"baseRefOid"`
 	Body       string `json:"body"`
 	Author     struct {
 		Login string `json:"login"`
@@ -30,7 +32,7 @@ type prListItem struct {
 func listPRs(repo string) ([]PR, error) {
 	out, err := exec.Command("gh", "pr", "list",
 		"--repo", repo,
-		"--json", "number,title,author,headRefOid,body",
+		"--json", "number,title,author,headRefOid,baseRefOid,body",
 		"--limit", "50",
 	).Output()
 	if err != nil {
@@ -50,6 +52,7 @@ func listPRs(repo string) ([]PR, error) {
 			Title:   it.Title,
 			Author:  it.Author.Login,
 			HeadSHA: it.HeadRefOid,
+			BaseSHA: it.BaseRefOid,
 			Body:    it.Body,
 		})
 	}
@@ -128,6 +131,30 @@ func fetchCompare(repo, base, head string) ([]FileChange, error) {
 		})
 	}
 	return files, nil
+}
+
+// fetchFileAtRef fetches file content at a specific git ref (commit SHA, branch).
+// Returns "" if the file doesn't exist at that ref (e.g., new file).
+func fetchFileAtRef(repo, path, ref string) (string, error) {
+	out, err := exec.Command("gh", "api",
+		fmt.Sprintf("repos/%s/contents/%s?ref=%s", repo, path, ref),
+	).Output()
+	if err != nil {
+		// File might not exist at this ref (new file). That's OK.
+		return "", nil
+	}
+	var content struct {
+		Content  string `json:"content"`
+		Encoding string `json:"encoding"`
+	}
+	if err := json.Unmarshal(out, &content); err != nil {
+		return "", nil
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(content.Content, "\n", ""))
+	if err != nil {
+		return "", nil
+	}
+	return string(decoded), nil
 }
 
 func fetchBlob(repo, sha string) (string, error) {
