@@ -75,16 +75,16 @@ type prsLoadedMsg struct {
 	prs []PR
 	err error
 }
-type inProgressLoadedMsg struct {
-	prs []PR
-	err error
-}
 type filesLoadedMsg struct {
 	pr    PR
 	files []FileChange
 	err   error
 }
 type prefetchDoneMsg struct{}
+type blobLoadedMsg struct {
+	content string
+	err     error
+}
 
 // --- model ---
 
@@ -100,16 +100,17 @@ type model struct {
 	diff  viewport.Model
 
 	allPRs       []PR
+	freshKeys    map[string]bool         // keys confirmed still open by a repo listing
 	prFiles      map[string][]FileChange // prKey → files
 	selectedPR   *PR
 	selectedFile string
 
-	// Diff view state: which file is open, its parsed hunks, current mark set,
-	// and the line-offset table for navigation.
+	// Diff view state.
 	currentHunks []Hunk
 	currentMarks map[string]bool
 	hunkLines    []int
 	hunkIdx      int
+	blobContent  string // full file content, empty until blob loads
 
 	loadingFiles bool
 	statusMsg    string
@@ -124,63 +125,41 @@ func compactDelegate() list.DefaultDelegate {
 
 func newModel(cfg *Config, brain *Brain) model {
 	prList := list.New(nil, compactDelegate(), 0, 0)
-	prList.Title = "PRs (loading...)"
 
 	fileList := list.New(nil, compactDelegate(), 0, 0)
 	fileList.Title = "Files"
 
 	vp := viewport.New(0, 0)
 
-	return model{
+	m := model{
 		cfg:     cfg,
 		brain:   brain,
 		view:    viewPRs,
 		prs:     prList,
 		files:   fileList,
 		diff:    vp,
-		prFiles: map[string][]FileChange{},
+		prFiles:   map[string][]FileChange{},
+		freshKeys: map[string]bool{},
 	}
+
+	cached := brain.CachedPRs()
+	if len(cached) > 0 {
+		m.allPRs = cached
+		m.rebuildPRItems()
+		m.prs.Title = fmt.Sprintf("PRs (%d, refreshing…)", len(cached))
+	} else {
+		m.prs.Title = "PRs (loading...)"
+	}
+
+	return m
 }
 
 func (m model) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.loadInProgressCmd()}
-	for _, repo := range m.cfg.Repos {
-		cmds = append(cmds, loadRepoPRsCmd(repo))
+	cmds := make([]tea.Cmd, len(m.cfg.Repos))
+	for i, repo := range m.cfg.Repos {
+		cmds[i] = loadRepoPRsCmd(repo)
 	}
 	return tea.Batch(cmds...)
-}
-
-// loadInProgressCmd fetches metadata for every PR the brain knows about, in
-// parallel, so in-progress PRs can render before the (slower) full repo
-// listings arrive.
-func (m model) loadInProgressCmd() tea.Cmd {
-	refs := m.brain.InProgressRefs()
-	return func() tea.Msg {
-		if len(refs) == 0 {
-			return inProgressLoadedMsg{}
-		}
-		results := make([]PR, len(refs))
-		errs := make([]error, len(refs))
-		var wg sync.WaitGroup
-		for i, ref := range refs {
-			wg.Add(1)
-			go func(i int, ref PRRef) {
-				defer wg.Done()
-				pr, err := fetchPR(ref.Repo, ref.Number)
-				results[i] = pr
-				errs[i] = err
-			}(i, ref)
-		}
-		wg.Wait()
-		var prs []PR
-		for i, pr := range results {
-			if errs[i] != nil {
-				continue // tolerate — may be closed/merged/renamed repo
-			}
-			prs = append(prs, pr)
-		}
-		return inProgressLoadedMsg{prs: prs}
-	}
 }
 
 // loadRepoPRsCmd fetches PRs for a single repo and returns a prsLoadedMsg.
@@ -276,14 +255,10 @@ func (m *model) rebuildPRItems() {
 		looked := m.brain.HasAnyMarks(pr.Repo, pr.Number)
 		if files, ok := m.prFiles[prKey(pr.Repo, pr.Number)]; ok {
 			unseen := m.brain.UnseenCount(pr.Repo, pr.Number, files)
-			total := len(files)
 			if unseen == 0 {
 				it.summary = "✓ caught up"
 			} else {
 				it.summary = fmt.Sprintf("%d new", unseen)
-			}
-			if unseen < total {
-				looked = true
 			}
 		}
 		if looked {
@@ -377,15 +352,25 @@ func (m *model) currentFile() (FileChange, bool) {
 }
 
 // openFile loads a file into the diff view: parse hunks, seed marks from the
-// brain, render, and position on the first unmarked hunk.
-func (m *model) openFile(fc FileChange) {
+// brain, show patch view immediately, then kick off blob fetch for full file.
+func (m *model) openFile(fc FileChange) tea.Cmd {
 	m.selectedFile = fc.Path
 	m.view = viewDiff
+	m.blobContent = ""
 	m.currentHunks = parseHunks(fc.Patch)
 	m.currentMarks = m.brain.HunkMarks(m.selectedPR.Repo, m.selectedPR.Number, fc.Path)
-	m.redrawDiff()
 	m.hunkIdx = firstUnmarked(m.currentHunks, m.currentMarks)
+	m.redrawDiff()
 	m.jumpToCurrentHunk()
+	if fc.Blob == "" {
+		return nil
+	}
+	repo := m.selectedPR.Repo
+	sha := fc.Blob
+	return func() tea.Msg {
+		content, err := fetchBlob(repo, sha)
+		return blobLoadedMsg{content: content, err: err}
+	}
 }
 
 func firstUnmarked(hunks []Hunk, marks map[string]bool) int {
@@ -403,7 +388,13 @@ func (m *model) redrawDiff() {
 		m.hunkLines = nil
 		return
 	}
-	body, lines := renderHunks(m.currentHunks, m.currentMarks, m.hunkIdx)
+	var body string
+	var lines []int
+	if m.blobContent != "" {
+		body, lines = renderFullFile(m.blobContent, m.currentHunks, m.currentMarks, m.hunkIdx)
+	} else {
+		body, lines = renderHunks(m.currentHunks, m.currentMarks, m.hunkIdx)
+	}
 	m.diff.SetContent(body)
 	m.hunkLines = lines
 }
@@ -413,6 +404,15 @@ func (m *model) jumpToCurrentHunk() {
 		return
 	}
 	m.diff.SetYOffset(m.hunkLines[m.hunkIdx])
+}
+
+func (m *model) allHunksMarked() bool {
+	for _, h := range m.currentHunks {
+		if !m.currentMarks[h.Hash] {
+			return false
+		}
+	}
+	return len(m.currentHunks) > 0
 }
 
 func (m *model) saveMarks() {
@@ -437,29 +437,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.diff.Height = listH
 		return m, nil
 
-	case inProgressLoadedMsg:
-		if msg.err != nil {
-			m.statusMsg = "error: " + msg.err.Error()
-			return m, nil
-		}
-		// Seed the list with in-progress PRs immediately. These go on top
-		// (rebuildPRItems buckets them via HasAnyMarks) so the reviewer sees
-		// their active work before any repo listing finishes.
-		added := m.mergePRs(msg.prs)
-		m.rebuildPRItems()
-		if len(added) > 0 {
-			return m, prefetchAllCmd(added)
-		}
-		return m, nil
-
 	case prsLoadedMsg:
 		if msg.err != nil {
 			m.statusMsg = "error: " + msg.err.Error()
 			return m, nil
 		}
+		for _, p := range msg.prs {
+			m.freshKeys[prKey(p.Repo, p.Number)] = true
+		}
 		added := m.mergePRs(msg.prs)
 		m.rebuildPRItems()
 		m.prs.Title = fmt.Sprintf("PRs (%d, loading files…)", len(m.allPRs))
+		go m.brain.SetPRCache(m.allPRs)
 		return m, prefetchAllCmd(added)
 
 	case filesLoadedMsg:
@@ -477,7 +466,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case blobLoadedMsg:
+		if msg.err != nil {
+			m.statusMsg = "blob: " + msg.err.Error()
+			return m, nil
+		}
+		if m.view == viewDiff {
+			m.blobContent = msg.content
+			m.redrawDiff()
+			m.jumpToCurrentHunk()
+		}
+		return m, nil
+
 	case prefetchDoneMsg:
+		// Prune cached PRs that are no longer open (merged/closed since
+		// last session). freshKeys was populated by prsLoadedMsg handlers.
+		if len(m.freshKeys) > 0 {
+			var live []PR
+			for _, p := range m.allPRs {
+				if m.freshKeys[prKey(p.Repo, p.Number)] {
+					live = append(live, p)
+				}
+			}
+			m.allPRs = live
+			m.rebuildPRItems()
+			go m.brain.SetPRCache(m.allPRs)
+		}
 		m.prs.Title = fmt.Sprintf("PRs (%d)", len(m.allPRs))
 		return m, nil
 
@@ -517,8 +531,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.currentMarks[h.Hash] = true
 					}
 					m.saveMarks()
-					// Advance to the next hunk after toggling, so you can
-					// space-space-space through a review.
 					if m.hunkIdx < len(m.currentHunks)-1 {
 						m.hunkIdx++
 					}
@@ -526,7 +538,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.jumpToCurrentHunk()
 				}
 				return m, nil
-			case "h":
+			case "h", "left":
 				m.view = viewFiles
 				m.rebuildFileItems()
 				m.rebuildPRItems()
@@ -542,7 +554,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.saveMarks()
 				m.redrawDiff()
 				m.jumpToCurrentHunk()
-				m.statusMsg = "marked all hunks in " + m.selectedFile
+				return m, nil
+			case "enter", "right":
+				if m.allHunksMarked() {
+					m.view = viewFiles
+					m.rebuildFileItems()
+					m.rebuildPRItems()
+				}
 				return m, nil
 			case "u":
 				// Unmark every current hunk.
@@ -567,7 +585,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !listIsFiltering(m) {
 				return m, tea.Quit
 			}
-		case "esc", "h":
+		case "esc", "h", "left":
 			if msg.String() == "h" && listIsFiltering(m) {
 				break
 			}
@@ -575,7 +593,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.view = viewPRs
 				return m, nil
 			}
-		case "enter", "l":
+		case "enter", "l", "right":
 			if msg.String() == "l" && listIsFiltering(m) {
 				break
 			}
@@ -598,8 +616,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case viewFiles:
 				if it, ok := m.files.SelectedItem().(fileItem); ok {
-					m.openFile(it.fc)
-					return m, nil
+					cmd := m.openFile(it.fc)
+					return m, cmd
 				}
 			}
 		}
@@ -608,13 +626,38 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	switch m.view {
 	case viewPRs:
+		prev := m.prs.Index()
 		m.prs, cmd = m.prs.Update(msg)
+		skipSectionHeaders(&m.prs, prev)
 	case viewFiles:
+		prev := m.files.Index()
 		m.files, cmd = m.files.Update(msg)
+		skipSectionHeaders(&m.files, prev)
 	case viewDiff:
 		m.diff, cmd = m.diff.Update(msg)
 	}
 	return m, cmd
+}
+
+// skipSectionHeaders nudges the cursor past non-interactive sectionItem
+// headers. Direction is inferred from whether the index went up or down.
+func skipSectionHeaders(l *list.Model, prevIdx int) {
+	items := l.Items()
+	cur := l.Index()
+	if cur >= len(items) {
+		return
+	}
+	if _, ok := items[cur].(sectionItem); !ok {
+		return
+	}
+	dir := 1
+	if cur < prevIdx {
+		dir = -1
+	}
+	next := cur + dir
+	if next >= 0 && next < len(items) {
+		l.Select(next)
+	}
 }
 
 func listIsFiltering(m model) bool {

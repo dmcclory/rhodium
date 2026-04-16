@@ -3,7 +3,9 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -79,7 +81,30 @@ func hashHunkBody(lines []string) string {
 var (
 	focusedHunkStyle = lipgloss.NewStyle().Reverse(true).Bold(true)
 	markedStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+	addedStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+	deletedStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
+	lineNumStyle     = lipgloss.NewStyle().Faint(true)
 )
+
+type hunkRange struct {
+	newStart int
+	newCount int
+}
+
+var hunkRangeRE = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@`)
+
+func parseHunkRange(header string) hunkRange {
+	m := hunkRangeRE.FindStringSubmatch(header)
+	if m == nil {
+		return hunkRange{}
+	}
+	start, _ := strconv.Atoi(m[1])
+	count := 1
+	if m[2] != "" {
+		count, _ = strconv.Atoi(m[2])
+	}
+	return hunkRange{newStart: start, newCount: count}
+}
 
 // renderHunks produces the diff body with a "[✓]"/"[ ]" marker prepended to
 // each hunk header. The hunk at focusedIdx is rendered with a reverse-video
@@ -103,9 +128,110 @@ func renderHunks(hunks []Hunk, marks map[string]bool, focusedIdx int) (string, [
 		b.WriteString(headerLine + "\n")
 		lineNum++
 		for _, line := range h.BodyLines {
-			b.WriteString(line + "\n")
+			b.WriteString(colorDiffLine(line) + "\n")
 			lineNum++
 		}
 	}
 	return b.String(), hunkLines
+}
+
+func colorDiffLine(line string) string {
+	if len(line) == 0 {
+		return line
+	}
+	switch line[0] {
+	case '+':
+		return addedStyle.Render(line)
+	case '-':
+		return deletedStyle.Render(line)
+	default:
+		return line
+	}
+}
+
+// renderFullFile produces a full-file view with diff lines colored inline.
+// Unchanged lines show with line numbers; additions are green, deletions red.
+// Hunk headers with mark indicators are shown at each change boundary.
+func renderFullFile(fileContent string, hunks []Hunk, marks map[string]bool, focusedIdx int) (string, []int) {
+	fileLines := strings.Split(fileContent, "\n")
+	if len(fileLines) > 0 && fileLines[len(fileLines)-1] == "" {
+		fileLines = fileLines[:len(fileLines)-1]
+	}
+
+	type parsedHunk struct {
+		Hunk
+		r hunkRange
+	}
+	parsed := make([]parsedHunk, len(hunks))
+	for i, h := range hunks {
+		parsed[i] = parsedHunk{Hunk: h, r: parseHunkRange(h.Header)}
+	}
+
+	var b strings.Builder
+	hunkLineOffsets := make([]int, len(hunks))
+	outputLine := 0
+	newFileLine := 1 // 1-indexed line in the new file
+	gutterW := len(fmt.Sprintf("%d", len(fileLines)+100))
+
+	writeLine := func(num int, text string) {
+		gutter := lineNumStyle.Render(fmt.Sprintf("%*d", gutterW, num))
+		b.WriteString(gutter + "  " + text + "\n")
+		outputLine++
+	}
+	writeUnnum := func(text string) {
+		pad := strings.Repeat(" ", gutterW)
+		b.WriteString(pad + "  " + text + "\n")
+		outputLine++
+	}
+
+	for hi, ph := range parsed {
+		// Plain lines before this hunk.
+		for newFileLine < ph.r.newStart && newFileLine-1 < len(fileLines) {
+			writeLine(newFileLine, fileLines[newFileLine-1])
+			newFileLine++
+		}
+
+		// Hunk header.
+		mark := "[ ]"
+		if marks[ph.Hash] {
+			mark = markedStyle.Render("[✓]")
+		}
+		headerLine := mark + " " + ph.Header
+		if hi == focusedIdx {
+			headerLine = focusedHunkStyle.Render(headerLine)
+		}
+		hunkLineOffsets[hi] = outputLine
+		writeUnnum(headerLine)
+
+		// Replay hunk body.
+		for _, line := range ph.BodyLines {
+			if len(line) == 0 {
+				writeLine(newFileLine, "")
+				newFileLine++
+				continue
+			}
+			switch line[0] {
+			case '+':
+				writeLine(newFileLine, addedStyle.Render(line[1:]))
+				newFileLine++
+			case '-':
+				writeUnnum(deletedStyle.Render(line))
+			default: // context line (space prefix)
+				text := line
+				if len(text) > 0 && text[0] == ' ' {
+					text = text[1:]
+				}
+				writeLine(newFileLine, text)
+				newFileLine++
+			}
+		}
+	}
+
+	// Remaining lines after last hunk.
+	for newFileLine-1 < len(fileLines) {
+		writeLine(newFileLine, fileLines[newFileLine-1])
+		newFileLine++
+	}
+
+	return b.String(), hunkLineOffsets
 }

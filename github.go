@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strings"
 )
 
 type PR struct {
@@ -51,39 +53,6 @@ func listPRs(repo string) ([]PR, error) {
 	return prs, nil
 }
 
-// fetchPR returns metadata for a single PR via REST. Used to render
-// in-progress PRs immediately without waiting for a full repo listing.
-// `gh api repos/.../pulls/N` is a single REST call — faster than `gh pr view`,
-// which goes through GraphQL with extra round-trips.
-func fetchPR(repo string, number int) (PR, error) {
-	out, err := exec.Command("gh", "api",
-		fmt.Sprintf("repos/%s/pulls/%d", repo, number),
-	).Output()
-	if err != nil {
-		return PR{}, fmt.Errorf("gh api pulls %s#%d: %w", repo, number, err)
-	}
-	var it struct {
-		Number int    `json:"number"`
-		Title  string `json:"title"`
-		User   struct {
-			Login string `json:"login"`
-		} `json:"user"`
-		Head struct {
-			Sha string `json:"sha"`
-		} `json:"head"`
-	}
-	if err := json.Unmarshal(out, &it); err != nil {
-		return PR{}, err
-	}
-	return PR{
-		Repo:    repo,
-		Number:  it.Number,
-		Title:   it.Title,
-		Author:  it.User.Login,
-		HeadSHA: it.Head.Sha,
-	}, nil
-}
-
 type FileChange struct {
 	Path      string
 	Additions int
@@ -126,5 +95,26 @@ func listPRFiles(repo string, number int) ([]FileChange, error) {
 		})
 	}
 	return files, nil
+}
+
+func fetchBlob(repo, sha string) (string, error) {
+	out, err := exec.Command("gh", "api",
+		fmt.Sprintf("repos/%s/git/blobs/%s", repo, sha),
+	).Output()
+	if err != nil {
+		return "", fmt.Errorf("gh api blob %s %s: %w", repo, sha, err)
+	}
+	var blob struct {
+		Content  string `json:"content"`
+		Encoding string `json:"encoding"`
+	}
+	if err := json.Unmarshal(out, &blob); err != nil {
+		return "", err
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(blob.Content, "\n", ""))
+	if err != nil {
+		return "", fmt.Errorf("decode blob: %w", err)
+	}
+	return string(decoded), nil
 }
 
