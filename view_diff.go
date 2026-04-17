@@ -7,6 +7,13 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+func (m model) viewDiff() string {
+	if m.noting {
+		return m.renderNotingView()
+	}
+	return m.diff.View()
+}
+
 // openFile loads a file into the diff view: parse hunks, seed marks from the
 // brain, show patch view immediately, then kick off blob fetch for full file.
 //
@@ -239,4 +246,154 @@ func (m *model) cursorLineHash(lineNo int) string {
 		return ""
 	}
 	return hashLine(lines[idx])
+}
+
+// updateDiffNotingKeys handles keys while the note textarea is focused.
+func (m *model) updateDiffNotingKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.noting = false
+		m.noteInput.Blur()
+		m.restoreDiffSize()
+		return m, nil
+	case "ctrl+d":
+		body := strings.TrimSpace(m.noteInput.Value())
+		m.noting = false
+		m.noteInput.Blur()
+		m.restoreDiffSize()
+		if body != "" {
+			if err := m.brain.SaveNote(m.selectedPR.Repo, m.selectedPR.Number, m.selectedFile, m.noteLineNo, m.noteLineHash, body); err != nil {
+				m.statusMsg = "save note: " + err.Error()
+			} else {
+				m.currentNotes = m.brain.NotesForFile(m.selectedPR.Repo, m.selectedPR.Number, m.selectedFile)
+				m.redrawDiff()
+			}
+		}
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.noteInput, cmd = m.noteInput.Update(msg)
+	return m, cmd
+}
+
+// updateDiffKeys handles keys in the diff view (not noting mode).
+func (m *model) updateDiffKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c", "q":
+		return m, tea.Quit
+	case "esc":
+		m.view = viewFiles
+		m.rebuildFileItems()
+		m.rebuildPRItems()
+		return m, nil
+	case "n", "down", "tab":
+		if len(m.currentHunks) > 0 && m.hunkIdx < len(m.currentHunks)-1 {
+			m.hunkIdx++
+			m.redrawDiff()
+			m.jumpToCurrentHunk()
+		}
+		return m, nil
+	case "p", "up", "shift+tab":
+		if m.hunkIdx > 0 {
+			m.hunkIdx--
+			m.redrawDiff()
+			m.jumpToCurrentHunk()
+		}
+		return m, nil
+	case " ", "x":
+		if m.hunkIdx >= 0 && m.hunkIdx < len(m.currentHunks) {
+			h := m.currentHunks[m.hunkIdx]
+			if m.currentMarks == nil {
+				m.currentMarks = map[string]bool{}
+			}
+			if m.currentMarks[h.Hash] {
+				delete(m.currentMarks, h.Hash)
+			} else {
+				m.currentMarks[h.Hash] = true
+			}
+			m.saveMarks()
+			if m.hunkIdx < len(m.currentHunks)-1 {
+				m.hunkIdx++
+			}
+			m.redrawDiff()
+			m.jumpToCurrentHunk()
+		}
+		return m, nil
+	case "h", "left":
+		m.view = viewFiles
+		m.rebuildFileItems()
+		m.rebuildPRItems()
+		return m, nil
+	case "m":
+		if m.currentMarks == nil {
+			m.currentMarks = map[string]bool{}
+		}
+		for _, h := range m.currentHunks {
+			m.currentMarks[h.Hash] = true
+		}
+		m.saveMarks()
+		m.redrawDiff()
+		m.jumpToCurrentHunk()
+		return m, nil
+	case "enter", "right":
+		if m.allHunksMarked() {
+			m.view = viewFiles
+			m.rebuildFileItems()
+			m.rebuildPRItems()
+		}
+		return m, nil
+	case "j":
+		m.moveCursor(1)
+		return m, nil
+	case "k":
+		m.moveCursor(-1)
+		return m, nil
+	case "u":
+		m.currentMarks = map[string]bool{}
+		m.saveMarks()
+		m.redrawDiff()
+		m.hunkIdx = 0
+		m.jumpToCurrentHunk()
+		m.statusMsg = "cleared marks on " + m.selectedFile
+		return m, nil
+	case "d":
+		if m.catchUpOldHead == "" {
+			return m, nil
+		}
+		fc, ok := m.currentFile()
+		if !ok {
+			return m, nil
+		}
+		if m.catchUpMode {
+			m.catchUpMode = false
+			m.currentHunks = parseHunks(fc.Patch)
+			m.currentMarks = m.brain.HunkMarks(m.selectedPR.Repo, m.selectedPR.Number, fc.Path)
+			m.hunkIdx = firstUnmarked(m.currentHunks, m.currentMarks)
+			m.statusMsg = "full diff  (d: catch-up diff)"
+		} else {
+			m.catchUpMode = true
+			m.currentHunks = parseHunks(m.catchUpPatch)
+			m.currentMarks = m.brain.HunkMarks(m.selectedPR.Repo, m.selectedPR.Number, fc.Path)
+			m.hunkIdx = firstUnmarked(m.currentHunks, m.currentMarks)
+			m.statusMsg = fmt.Sprintf("catch-up [%s]: changes since %s  (d: full diff)", m.catchUpClass, shortSHA(m.catchUpOldHead))
+		}
+		m.redrawDiff()
+		m.jumpToCurrentHunk()
+		return m, nil
+	case "c":
+		lineNo := m.cursorFileLine()
+		if lineNo == 0 {
+			m.statusMsg = "cursor not on a file line"
+			return m, nil
+		}
+		m.noting = true
+		m.noteLineNo = lineNo
+		m.noteLineHash = m.cursorLineHash(lineNo)
+		m.noteInput.Reset()
+		return m, m.noteInput.Focus()
+	}
+	// Fall through to let the viewport handle scrolling keys.
+	var cmd tea.Cmd
+	m.diff, cmd = m.diff.Update(msg)
+	return m, cmd
 }
