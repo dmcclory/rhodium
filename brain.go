@@ -317,13 +317,30 @@ func (b *Brain) SetPRCache(prs []PR) error {
 }
 
 type Note struct {
-	ID        int64
-	PRKey     string
-	Path      string
-	LineNo    int
-	LineHash  string
-	Body      string
-	CreatedAt string
+	ID        int64  `json:"id"`
+	PRKey     string `json:"pr_key"`
+	Path      string `json:"path"`
+	LineNo    int    `json:"line_no"`
+	LineHash  string `json:"line_hash"`
+	Body      string `json:"body"`
+	CreatedAt string `json:"created_at"`
+}
+
+// PRKeysWithNotes returns every pr_key that has at least one note, sorted.
+func (b *Brain) PRKeysWithNotes() []string {
+	rows, err := b.db.Query(`SELECT DISTINCT pr_key FROM notes`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var k string
+		if rows.Scan(&k) == nil {
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 func (b *Brain) NoteCountForPR(repo string, pr int) int {

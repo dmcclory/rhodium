@@ -24,6 +24,7 @@ type model struct {
 	width  int
 	height int
 
+	todo  list.Model
 	prs   list.Model
 	files list.Model
 	diff  viewport.Model
@@ -37,6 +38,14 @@ type model struct {
 	prFiles      map[string][]FileChange // prKey → files
 	selectedPR   *PR
 	selectedFile string
+	// listViewOrigin is whichever of viewTodo / viewPRs the user was on when
+	// they drilled into viewFiles — used so esc/h returns them there.
+	listViewOrigin view
+	// pinnedAttention is the set of PR keys that have appeared in the todo
+	// "needs attention" section at any point this session. Once pinned, a PR
+	// stays in that section even if the user marks everything reviewed —
+	// otherwise items vanish while you're working and it's disorienting.
+	pinnedAttention map[string]bool
 
 	// Diff view state.
 	currentHunks []Hunk
@@ -75,6 +84,9 @@ func compactDelegate() list.DefaultDelegate {
 }
 
 func newModel(cfg *Config, brain *Brain) model {
+	todoList := list.New(nil, compactDelegate(), 0, 0)
+	todoList.Title = "Todo"
+
 	prList := list.New(nil, compactDelegate(), 0, 0)
 
 	fileList := list.New(nil, compactDelegate(), 0, 0)
@@ -90,17 +102,19 @@ func newModel(cfg *Config, brain *Brain) model {
 	ti.ShowLineNumbers = false
 
 	m := model{
-		cfg:     cfg,
-		brain:   brain,
-		view:    viewPRs,
-		prs:     prList,
-		files:   fileList,
-		diff:    vp,
+		cfg:       cfg,
+		brain:     brain,
+		view:      viewTodo,
+		todo:      todoList,
+		prs:       prList,
+		files:     fileList,
+		diff:      vp,
 		noteInput: ti,
 		infoVP:    infoVP,
 		descVP:    descVP,
-		prFiles:   map[string][]FileChange{},
-		freshKeys: map[string]bool{},
+		prFiles:         map[string][]FileChange{},
+		freshKeys:       map[string]bool{},
+		pinnedAttention: map[string]bool{},
 	}
 
 	cached := brain.CachedPRs()
@@ -130,6 +144,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		h, v := appStyle.GetFrameSize()
 		listW, listH := msg.Width-h, msg.Height-v-1
+		m.todo.SetSize(listW, listH)
 		m.prs.SetSize(listW, listH)
 		m.sizeFilesView(listW, listH)
 		m.diff.Width = listW
@@ -190,6 +205,8 @@ func skipSectionHeaders(l *list.Model, prevIdx int) {
 
 func listIsFiltering(m model) bool {
 	switch m.view {
+	case viewTodo:
+		return m.todo.FilterState() == list.Filtering
 	case viewPRs:
 		return m.prs.FilterState() == list.Filtering
 	case viewFiles:
@@ -203,6 +220,8 @@ var appStyle = lipgloss.NewStyle().Padding(0, 1)
 func (m model) View() string {
 	var body string
 	switch m.view {
+	case viewTodo:
+		body = m.viewTodo()
 	case viewPRs:
 		body = m.viewPRs()
 	case viewFiles:

@@ -8,6 +8,14 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 {
+		if err := runCLI(os.Args[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	cfg, err := loadConfig()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

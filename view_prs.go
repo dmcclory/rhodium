@@ -102,4 +102,6 @@ func (m *model) rebuildPRItems() {
 			}
 		}
 	}
+	// Todo list is a filtered view over the same data — rebuild in lockstep.
+	m.rebuildTodoItems()
 }

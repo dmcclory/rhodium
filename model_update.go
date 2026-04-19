@@ -160,7 +160,7 @@ func (m *model) handlePrefetchDone() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// updateListKeys handles keys for the PR list and files list views.
+// updateListKeys handles keys for the todo/PR/files list views.
 func (m *model) updateListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Tab switching in files view.
 	if m.view == viewFiles && !listIsFiltering(*m) {
@@ -173,6 +173,12 @@ func (m *model) updateListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.rebuildInfoVP()
 			return m, nil
 		}
+	}
+
+	// 'a' from the todo view drops into the full PR list.
+	if m.view == viewTodo && !listIsFiltering(*m) && msg.String() == "a" {
+		m.view = viewPRs
+		return m, nil
 	}
 
 	// 's' toggles scrutiny on the selected PR.
@@ -201,9 +207,17 @@ func (m *model) updateListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if msg.String() == "h" && listIsFiltering(*m) {
 			break
 		}
-		if m.view == viewFiles {
+		switch m.view {
+		case viewPRs:
+			m.view = viewTodo
+			return m, nil
+		case viewFiles:
 			m.fileTab = tabFiles
-			m.view = viewPRs
+			if m.listViewOrigin == viewTodo {
+				m.view = viewTodo
+			} else {
+				m.view = viewPRs
+			}
 			return m, nil
 		}
 	case "enter", "l", "right":
@@ -211,23 +225,13 @@ func (m *model) updateListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			break
 		}
 		switch m.view {
+		case viewTodo:
+			if it, ok := m.todo.SelectedItem().(todoItem); ok {
+				return m.openPR(it.pr)
+			}
 		case viewPRs:
 			if it, ok := m.prs.SelectedItem().(prItem); ok {
-				pr := it.pr
-				m.selectedPR = &pr
-				m.catchUpSession = m.brain.ActiveCatchUp(pr.Repo, pr.Number)
-				m.view = viewFiles
-				m.rebuildDescVP()
-				key := prKey(pr.Repo, pr.Number)
-				if _, cached := m.prFiles[key]; cached {
-					m.rebuildFileItems()
-					m.files.Title = fmt.Sprintf("Files in %s#%d", pr.Repo, pr.Number)
-					return m, nil
-				}
-				m.loadingFiles = true
-				m.files.Title = fmt.Sprintf("Files in %s#%d (loading...)", pr.Repo, pr.Number)
-				m.files.SetItems(nil)
-				return m, loadFilesCmd(pr)
+				return m.openPR(it.pr)
 			}
 		case viewFiles:
 			if m.fileTab != tabFiles {
@@ -244,10 +248,34 @@ func (m *model) updateListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m.delegateToWidget(msg)
 }
 
+// openPR transitions to the files view for pr, loading the file list if it
+// isn't already cached. Shared between the todo and full PR list views.
+func (m *model) openPR(pr PR) (tea.Model, tea.Cmd) {
+	m.listViewOrigin = m.view // remember where to return on esc/h
+	m.selectedPR = &pr
+	m.catchUpSession = m.brain.ActiveCatchUp(pr.Repo, pr.Number)
+	m.view = viewFiles
+	m.rebuildDescVP()
+	key := prKey(pr.Repo, pr.Number)
+	if _, cached := m.prFiles[key]; cached {
+		m.rebuildFileItems()
+		m.files.Title = fmt.Sprintf("Files in %s#%d", pr.Repo, pr.Number)
+		return m, nil
+	}
+	m.loadingFiles = true
+	m.files.Title = fmt.Sprintf("Files in %s#%d (loading...)", pr.Repo, pr.Number)
+	m.files.SetItems(nil)
+	return m, loadFilesCmd(pr)
+}
+
 // delegateToWidget passes an unhandled message to the active list or viewport.
 func (m *model) delegateToWidget(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	switch m.view {
+	case viewTodo:
+		prev := m.todo.Index()
+		m.todo, cmd = m.todo.Update(msg)
+		skipSectionHeaders(&m.todo, prev)
 	case viewPRs:
 		prev := m.prs.Index()
 		m.prs, cmd = m.prs.Update(msg)

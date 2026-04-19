@@ -10,7 +10,8 @@ import (
 type view int
 
 const (
-	viewPRs view = iota
+	viewTodo view = iota
+	viewPRs
 	viewFiles
 	viewDiff
 )
@@ -30,6 +31,46 @@ type prItem struct {
 	noteCount   int
 	scrutinized bool
 }
+
+// todoItem is a compact row in the todo dashboard view. Only PRs with
+// outstanding work (in-progress, catch-up, unseen, notes) become todoItems.
+type todoItem struct {
+	pr        PR
+	tags      []string // in stable order: in-progress, catch-up, unseen, notes
+	done      int      // catch-up progress — ignored when catch-up absent
+	total     int
+	remaining int // unseen hunk count — ignored when files not loaded
+	notes     int
+}
+
+func (i todoItem) Title() string {
+	var suffix []string
+	for _, t := range i.tags {
+		switch t {
+		case "in-progress":
+			if i.remaining > 0 {
+				suffix = append(suffix, fmt.Sprintf("%d new", i.remaining))
+			} else {
+				suffix = append(suffix, "in progress")
+			}
+		case "catch-up":
+			suffix = append(suffix, fmt.Sprintf("catch-up %d/%d", i.done, i.total))
+		case "unseen":
+			suffix = append(suffix, "unseen")
+		case "notes":
+			suffix = append(suffix, fmt.Sprintf("%d notes", i.notes))
+		case "done":
+			suffix = append(suffix, "✓ done")
+		}
+	}
+	head := fmt.Sprintf("%s#%d  %s  @%s", i.pr.Repo, i.pr.Number, i.pr.Title, i.pr.Author)
+	if len(suffix) > 0 {
+		head += "  [" + strings.Join(suffix, ", ") + "]"
+	}
+	return head
+}
+func (i todoItem) Description() string { return "" }
+func (i todoItem) FilterValue() string { return i.Title() }
 
 func (i prItem) Title() string {
 	head := fmt.Sprintf("%s#%d  %s  @%s", i.pr.Repo, i.pr.Number, i.pr.Title, i.pr.Author)
