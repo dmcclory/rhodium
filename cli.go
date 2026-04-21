@@ -28,6 +28,8 @@ func runCLI(args []string) error {
 		return cmdNote(args[1:])
 	case "resolve":
 		return cmdResolve(args[1:])
+	case "brain":
+		return cmdBrain(args[1:])
 	case "help", "-h", "--help":
 		printUsage()
 		return nil
@@ -63,6 +65,7 @@ Usage:
   rhodium unmark <owner/repo#N> <file> <hunk-hash>  unmark a hunk
   rhodium note <owner/repo#N> <file> <line> <body>  add a note (body "-" reads from stdin)
   rhodium resolve <note-id>...                      mark one or more notes resolved
+  rhodium brain status                              inspect the brain db (path, schema version, pending migrations)
 
 Flags:
   --json    emit JSON (notes, todo, state)
@@ -82,6 +85,75 @@ func parsePRRef(s string) (repo string, number int, err error) {
 		return "", 0, err
 	}
 	return m[1], n, nil
+}
+
+func cmdBrain(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: rhodium brain status")
+	}
+	switch args[0] {
+	case "status":
+		return cmdBrainStatus(args[1:])
+	default:
+		return fmt.Errorf("unknown brain subcommand: %s (try 'status')", args[0])
+	}
+}
+
+func cmdBrainStatus(args []string) error {
+	flags, _ := splitFlags(args)
+	fs := flag.NewFlagSet("brain status", flag.ContinueOnError)
+	asJSON := fs.Bool("json", false, "emit JSON")
+	if err := fs.Parse(flags); err != nil {
+		return err
+	}
+	status, err := InspectBrain()
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(status)
+	}
+	fmt.Printf("path:      %s\n", status.Path)
+	if !status.Exists {
+		fmt.Println("status:    (no database file — will be created on first use)")
+		fmt.Printf("embedded:  %d migrations (latest v%d)\n", status.EmbeddedCount, status.MaxEmbedded)
+		return nil
+	}
+	fmt.Printf("version:   %d\n", status.CurrentVersion)
+	fmt.Printf("embedded:  %d migrations (latest v%d)\n", status.EmbeddedCount, status.MaxEmbedded)
+	fmt.Printf("pending:   %d\n", status.Pending)
+	if status.Ahead {
+		fmt.Println("WARNING:   database is AHEAD of this binary — upgrade rhodium")
+	}
+	if len(status.HashMismatches) > 0 {
+		fmt.Println("WARNING:   migration file content changed since apply:")
+		for _, m := range status.HashMismatches {
+			fmt.Printf("             v%d %s\n", m.Version, m.File)
+		}
+	}
+	if len(status.Migrations) > 0 {
+		fmt.Println("migrations:")
+		for _, m := range status.Migrations {
+			marker := "applied"
+			if m.Pending {
+				marker = "pending"
+			}
+			file := m.File
+			if file == "" {
+				file = "(no file)"
+			}
+			fmt.Printf("  v%-4d  %-10s  %s\n", m.Version, marker, file)
+		}
+	}
+	if len(status.Backups) > 0 {
+		fmt.Println("backups:")
+		for _, b := range status.Backups {
+			fmt.Printf("  %s\n", b)
+		}
+	}
+	return nil
 }
 
 // cmdNotes prints notes for a single PR.

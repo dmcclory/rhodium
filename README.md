@@ -174,6 +174,14 @@ All review state lives in a SQLite DB at
 `~/.local/share/rhodium/brain.db` (override with `$RHODIUM_BRAIN`).
 WAL mode is on, so the TUI and nvim can write concurrently.
 
+Schema changes are managed with [goose][goose] migrations embedded in
+the binary. See [`migrations/README.md`](migrations/README.md) for
+how to add one and how the bootstrap / downgrade / hash / backup
+guardrails work. `rhodium brain status` inspects the DB without
+running migrations — handy when something's wrong.
+
+[goose]: https://github.com/pressly/goose
+
 ## Environment variables
 
 | Variable | Purpose |

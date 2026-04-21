@@ -1,13 +1,22 @@
 package main
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"embed"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
+	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite"
 )
+
+//go:embed migrations/*.sql
+var migrationsFS embed.FS
 
 // FileStatus is the reviewer's per-file state: none / some / all hunks marked.
 type FileStatus int
@@ -64,86 +73,433 @@ func LoadBrain() (*Brain, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open brain db: %w", err)
 	}
-	if _, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS hunk_marks (
-			pr_key    TEXT NOT NULL,
-			path      TEXT NOT NULL,
-			hunk_hash TEXT NOT NULL,
-			PRIMARY KEY (pr_key, path, hunk_hash)
-		);
-		CREATE TABLE IF NOT EXISTS pr_cache (
-			repo     TEXT    NOT NULL,
-			number   INTEGER NOT NULL,
-			title    TEXT    NOT NULL,
-			author   TEXT    NOT NULL,
-			head_sha TEXT    NOT NULL,
-			base_sha TEXT    NOT NULL DEFAULT '',
-			body     TEXT    NOT NULL DEFAULT '',
-			PRIMARY KEY (repo, number)
-		);
-		CREATE TABLE IF NOT EXISTS notes (
-			id          INTEGER PRIMARY KEY AUTOINCREMENT,
-			pr_key      TEXT    NOT NULL,
-			path        TEXT    NOT NULL,
-			line_no     INTEGER NOT NULL,
-			line_hash   TEXT    NOT NULL,
-			body        TEXT    NOT NULL,
-			source      TEXT    NOT NULL DEFAULT 'human',
-			created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
-			resolved_at TEXT
-		);
-		CREATE INDEX IF NOT EXISTS idx_notes_file ON notes (pr_key, path);
-
-		CREATE TABLE IF NOT EXISTS file_reviews (
-			pr_key      TEXT NOT NULL,
-			path        TEXT NOT NULL,
-			head_sha    TEXT NOT NULL,
-			base_sha    TEXT NOT NULL DEFAULT '',
-			reviewed_at TEXT NOT NULL DEFAULT (datetime('now')),
-			PRIMARY KEY (pr_key, path)
-		);
-
-		CREATE TABLE IF NOT EXISTS pr_scrutiny (
-			pr_key TEXT NOT NULL PRIMARY KEY
-		);
-
-		CREATE TABLE IF NOT EXISTS catch_up_sessions (
-			id          INTEGER PRIMARY KEY AUTOINCREMENT,
-			pr_key      TEXT    NOT NULL,
-			old_head    TEXT    NOT NULL,
-			new_head    TEXT    NOT NULL,
-			old_base    TEXT    NOT NULL DEFAULT '',
-			new_base    TEXT    NOT NULL DEFAULT '',
-			files_total INTEGER NOT NULL DEFAULT 0,
-			files_done  INTEGER NOT NULL DEFAULT 0,
-			created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
-			completed_at TEXT
-		);
-		CREATE INDEX IF NOT EXISTS idx_catchup_pr ON catch_up_sessions (pr_key);
-	`); err != nil {
+	if err := runMigrations(db, path); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("migrate brain db: %w", err)
-	}
-	// Migrate older DBs that predate the resolved_at column.
-	var haveResolvedAt int
-	_ = db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('notes') WHERE name = 'resolved_at'`).Scan(&haveResolvedAt)
-	if haveResolvedAt == 0 {
-		if _, err := db.Exec(`ALTER TABLE notes ADD COLUMN resolved_at TEXT`); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("migrate notes.resolved_at: %w", err)
-		}
-	}
-	// Migrate older DBs that predate the source column. Existing notes stay
-	// 'human' so pre-agent-era workflows are unaffected.
-	var haveSource int
-	_ = db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('notes') WHERE name = 'source'`).Scan(&haveSource)
-	if haveSource == 0 {
-		if _, err := db.Exec(`ALTER TABLE notes ADD COLUMN source TEXT NOT NULL DEFAULT 'human'`); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("migrate notes.source: %w", err)
-		}
+		return nil, err
 	}
 	return &Brain{db: db}, nil
+}
+
+func runMigrations(db *sql.DB, path string) error {
+	if err := bootstrapPreGooseDB(db); err != nil {
+		return fmt.Errorf("bootstrap brain db: %w", err)
+	}
+	if err := checkBrainNotAhead(db, path); err != nil {
+		return err
+	}
+	if err := ensureHashTable(db); err != nil {
+		return fmt.Errorf("prepare hash table: %w", err)
+	}
+	if err := checkMigrationHashes(db, path); err != nil {
+		return err
+	}
+	if err := backupBrainIfPending(db, path); err != nil {
+		return fmt.Errorf("back up brain db: %w", err)
+	}
+	goose.SetBaseFS(migrationsFS)
+	goose.SetLogger(goose.NopLogger())
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		return fmt.Errorf("set goose dialect: %w", err)
+	}
+	if err := goose.Up(db, "migrations"); err != nil {
+		return fmt.Errorf("migrate brain db: %w", err)
+	}
+	if err := recordMigrationHashes(db); err != nil {
+		return fmt.Errorf("record migration hashes: %w", err)
+	}
+	return nil
+}
+
+// checkBrainNotAhead refuses to open a brain db whose schema version exceeds
+// the newest migration this binary ships with. That typically means an older
+// rhodium is being pointed at a database already upgraded by a newer one, and
+// silently running against it could corrupt newer columns or tables.
+func checkBrainNotAhead(db *sql.DB, path string) error {
+	current, err := currentBrainVersion(db)
+	if err != nil {
+		return fmt.Errorf("read brain schema version: %w", err)
+	}
+	max, err := maxEmbeddedMigration()
+	if err != nil {
+		return fmt.Errorf("scan embedded migrations: %w", err)
+	}
+	if current > max {
+		return fmt.Errorf(
+			"brain db at %s is at schema version %d, but this build of rhodium only knows migrations up to version %d.\n"+
+				"You are likely running an older rhodium against a database upgraded by a newer one.\n"+
+				"Upgrade rhodium, or point RHODIUM_BRAIN at a different database.",
+			path, current, max)
+	}
+	return nil
+}
+
+func currentBrainVersion(db *sql.DB) (int64, error) {
+	var hasGoose int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='goose_db_version'`).Scan(&hasGoose); err != nil {
+		return 0, err
+	}
+	if hasGoose == 0 {
+		return 0, nil
+	}
+	var v sql.NullInt64
+	if err := db.QueryRow(`SELECT MAX(version_id) FROM goose_db_version WHERE is_applied = 1`).Scan(&v); err != nil {
+		return 0, err
+	}
+	if !v.Valid {
+		return 0, nil
+	}
+	return v.Int64, nil
+}
+
+func maxEmbeddedMigration() (int64, error) {
+	entries, err := migrationsFS.ReadDir("migrations")
+	if err != nil {
+		return 0, err
+	}
+	var max int64
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".sql") {
+			continue
+		}
+		underscore := strings.IndexByte(name, '_')
+		if underscore <= 0 {
+			continue
+		}
+		v, err := strconv.ParseInt(name[:underscore], 10, 64)
+		if err != nil {
+			continue
+		}
+		if v > max {
+			max = v
+		}
+	}
+	return max, nil
+}
+
+// bootstrapPreGooseDB brings databases created before goose was introduced up
+// to the v1 schema by applying the historical ad-hoc column additions. Once
+// every table matches 00001_initial_schema, goose.Up runs as a no-op against
+// CREATE TABLE IF NOT EXISTS and stamps the DB at version 1.
+func bootstrapPreGooseDB(db *sql.DB) error {
+	var hasNotes int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='notes'`).Scan(&hasNotes); err != nil {
+		return err
+	}
+	if hasNotes == 0 {
+		return nil
+	}
+	var hasGoose int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='goose_db_version'`).Scan(&hasGoose); err != nil {
+		return err
+	}
+	if hasGoose != 0 {
+		return nil
+	}
+	patches := []struct {
+		column string
+		ddl    string
+	}{
+		{"resolved_at", `ALTER TABLE notes ADD COLUMN resolved_at TEXT`},
+		{"source", `ALTER TABLE notes ADD COLUMN source TEXT NOT NULL DEFAULT 'human'`},
+	}
+	for _, p := range patches {
+		var have int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('notes') WHERE name = ?`, p.column).Scan(&have); err != nil {
+			return fmt.Errorf("inspect notes.%s: %w", p.column, err)
+		}
+		if have == 0 {
+			if _, err := db.Exec(p.ddl); err != nil {
+				return fmt.Errorf("patch notes.%s: %w", p.column, err)
+			}
+		}
+	}
+	return nil
+}
+
+// backupBrainIfPending snapshots the current DB to brain.db.bak-v{N} whenever
+// goose.Up is about to change the schema. Skips fresh DBs (nothing to save)
+// and skips when a same-version backup already exists (preserves the earliest
+// known-good copy instead of overwriting it with a later, possibly-broken one).
+func backupBrainIfPending(db *sql.DB, path string) error {
+	current, err := currentBrainVersion(db)
+	if err != nil {
+		return err
+	}
+	if current == 0 {
+		return nil
+	}
+	max, err := maxEmbeddedMigration()
+	if err != nil {
+		return err
+	}
+	if current >= max {
+		return nil
+	}
+	backup := fmt.Sprintf("%s.bak-v%d", path, current)
+	if _, err := os.Stat(backup); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if _, err := db.Exec(`VACUUM INTO ?`, backup); err != nil {
+		return fmt.Errorf("vacuum into %s: %w", backup, err)
+	}
+	return nil
+}
+
+// ensureHashTable creates the side table that tracks the sha256 of each
+// applied migration's source file. It is infra for the migration tooling
+// itself, not part of the application schema, so it lives outside goose.
+func ensureHashTable(db *sql.DB) error {
+	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS brain_migration_hashes (
+		version_id INTEGER PRIMARY KEY,
+		sha256     TEXT NOT NULL
+	)`)
+	return err
+}
+
+// checkMigrationHashes refuses to start if any already-applied migration's
+// file content has changed since it was applied. Catches the case where
+// someone edits a migration that's already been run against a DB — goose
+// would silently skip the edit, leaving schema and code divergent.
+func checkMigrationHashes(db *sql.DB, path string) error {
+	applied, err := appliedVersions(db)
+	if err != nil {
+		return err
+	}
+	for _, v := range applied {
+		file, disk, err := migrationFileAndHash(v)
+		if err != nil {
+			return err
+		}
+		if file == "" {
+			continue
+		}
+		var stored sql.NullString
+		if err := db.QueryRow(`SELECT sha256 FROM brain_migration_hashes WHERE version_id = ?`, v).Scan(&stored); err != nil && err != sql.ErrNoRows {
+			return err
+		}
+		if !stored.Valid {
+			continue
+		}
+		if stored.String != disk {
+			return fmt.Errorf(
+				"brain db at %s was migrated with a version of %s whose content has since changed.\n"+
+					"Expected sha256 %s, got %s.\n"+
+					"Revert the migration file, or reset the database (a backup may exist at %s.bak-v*).",
+				path, file, stored.String, disk, path)
+		}
+	}
+	return nil
+}
+
+// recordMigrationHashes inserts hash rows for any applied migration that
+// doesn't yet have one. Runs after goose.Up so newly-applied versions are
+// captured, and also picks up versions that were applied before this feature
+// existed (those get trusted on first sight).
+func recordMigrationHashes(db *sql.DB) error {
+	applied, err := appliedVersions(db)
+	if err != nil {
+		return err
+	}
+	for _, v := range applied {
+		file, disk, err := migrationFileAndHash(v)
+		if err != nil {
+			return err
+		}
+		if file == "" {
+			continue
+		}
+		if _, err := db.Exec(`INSERT OR IGNORE INTO brain_migration_hashes (version_id, sha256) VALUES (?, ?)`, v, disk); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func appliedVersions(db *sql.DB) ([]int64, error) {
+	var hasGoose int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='goose_db_version'`).Scan(&hasGoose); err != nil {
+		return nil, err
+	}
+	if hasGoose == 0 {
+		return nil, nil
+	}
+	rows, err := db.Query(`SELECT DISTINCT version_id FROM goose_db_version WHERE is_applied = 1 AND version_id > 0 ORDER BY version_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var v int64
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// migrationFileAndHash locates the embedded migration file for a given
+// version and returns its name and sha256 hex digest. Returns "" if no file
+// matches (applied version with no corresponding file — unusual but not
+// necessarily fatal here; other guards handle that).
+func migrationFileAndHash(version int64) (string, string, error) {
+	entries, err := migrationsFS.ReadDir("migrations")
+	if err != nil {
+		return "", "", err
+	}
+	prefix := fmt.Sprintf("%05d_", version)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") {
+			continue
+		}
+		if !strings.HasPrefix(e.Name(), prefix) {
+			continue
+		}
+		data, err := migrationsFS.ReadFile("migrations/" + e.Name())
+		if err != nil {
+			return "", "", err
+		}
+		sum := sha256.Sum256(data)
+		return e.Name(), hex.EncodeToString(sum[:]), nil
+	}
+	return "", "", nil
+}
+
+// BrainStatus is a read-only snapshot of the migration state, suitable for
+// `rhodium brain status`. Produced without running any migration, so it works
+// even when LoadBrain would refuse to open the DB (downgrade guard, hash
+// mismatch, etc).
+type BrainStatus struct {
+	Path           string                 `json:"path"`
+	Exists         bool                   `json:"exists"`
+	CurrentVersion int64                  `json:"current_version"`
+	MaxEmbedded    int64                  `json:"max_embedded"`
+	EmbeddedCount  int                    `json:"embedded_count"`
+	Pending        int                    `json:"pending"`
+	Ahead          bool                   `json:"ahead"`
+	Migrations     []BrainMigrationStatus `json:"migrations"`
+	HashMismatches []BrainMigrationStatus `json:"hash_mismatches,omitempty"`
+	Backups        []string               `json:"backups,omitempty"`
+}
+
+type BrainMigrationStatus struct {
+	Version int64  `json:"version"`
+	File    string `json:"file"`
+	Pending bool   `json:"pending"`
+}
+
+func InspectBrain() (BrainStatus, error) {
+	path, err := brainPath()
+	if err != nil {
+		return BrainStatus{}, err
+	}
+	status := BrainStatus{Path: path}
+
+	entries, err := migrationsFS.ReadDir("migrations")
+	if err != nil {
+		return status, err
+	}
+	type embedded struct {
+		version int64
+		file    string
+	}
+	var embeds []embedded
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".sql") {
+			continue
+		}
+		us := strings.IndexByte(name, '_')
+		if us <= 0 {
+			continue
+		}
+		v, err := strconv.ParseInt(name[:us], 10, 64)
+		if err != nil {
+			continue
+		}
+		embeds = append(embeds, embedded{version: v, file: name})
+		if v > status.MaxEmbedded {
+			status.MaxEmbedded = v
+		}
+	}
+	status.EmbeddedCount = len(embeds)
+
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return status, nil
+		}
+		return status, err
+	}
+	status.Exists = true
+
+	db, err := sql.Open("sqlite", path+"?mode=ro")
+	if err != nil {
+		return status, err
+	}
+	defer db.Close()
+
+	applied := map[int64]bool{}
+	status.CurrentVersion, err = currentBrainVersion(db)
+	if err != nil {
+		return status, err
+	}
+	versions, err := appliedVersions(db)
+	if err != nil {
+		return status, err
+	}
+	for _, v := range versions {
+		applied[v] = true
+	}
+
+	for _, e := range embeds {
+		status.Migrations = append(status.Migrations, BrainMigrationStatus{
+			Version: e.version,
+			File:    e.file,
+			Pending: !applied[e.version],
+		})
+		if !applied[e.version] && e.version <= status.MaxEmbedded {
+			status.Pending++
+		}
+	}
+	status.Ahead = status.CurrentVersion > status.MaxEmbedded
+
+	var hasHashTable int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='brain_migration_hashes'`).Scan(&hasHashTable)
+	if hasHashTable != 0 {
+		for _, v := range versions {
+			file, disk, err := migrationFileAndHash(v)
+			if err != nil {
+				return status, err
+			}
+			if file == "" {
+				continue
+			}
+			var stored sql.NullString
+			if err := db.QueryRow(`SELECT sha256 FROM brain_migration_hashes WHERE version_id = ?`, v).Scan(&stored); err != nil && err != sql.ErrNoRows {
+				return status, err
+			}
+			if stored.Valid && stored.String != disk {
+				status.HashMismatches = append(status.HashMismatches, BrainMigrationStatus{Version: v, File: file})
+			}
+		}
+	}
+
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	if dirEntries, err := os.ReadDir(dir); err == nil {
+		for _, e := range dirEntries {
+			name := e.Name()
+			if strings.HasPrefix(name, base+".bak-v") {
+				status.Backups = append(status.Backups, filepath.Join(dir, name))
+			}
+		}
+	}
+
+	return status, nil
 }
 
 func (b *Brain) Close() error {
