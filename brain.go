@@ -506,90 +506,168 @@ func (b *Brain) Close() error {
 	return b.db.Close()
 }
 
-// CatchUpSession represents a persistent catch-up session.
-type CatchUpSession struct {
+// ReviewSession is an ordered snapshot of the diff set the reviewer is
+// stepping through, kept stable across a single reviewing pass even if the
+// PR moves under them. Iron calls this the `Review_session`, separate from
+// the brain (long-term "what do I know"). Rhodium's session is narrower:
+// diff-set stability + resumability + progress tracking. Brain advancement
+// (file_reviews) still happens per-file on mark-save; see
+// `project_session_gate_semantics.md` for why gate-at-completion is deferred.
+//
+// FilesTotal / FilesDone are denormalized from review_session_files on read.
+type ReviewSession struct {
 	ID          int64
 	PRKey       string
-	OldHead     string
-	NewHead     string
-	OldBase     string
-	NewBase     string
+	HeadSHA     string
+	BaseSHA     string
+	GoalHead    string
+	GoalBase    string
 	FilesTotal  int
 	FilesDone   int
-	CreatedAt   string
-	CompletedAt string // empty if still active
+	StartedAt   string
+	CompletedAt string
 }
 
-// ActiveCatchUp returns the active (incomplete) catch-up session for a PR, or nil.
-func (b *Brain) ActiveCatchUp(repo string, pr int) *CatchUpSession {
+// SessionFile is one row from review_session_files — a single path's
+// snapshot within a session.
+type SessionFile struct {
+	Path  string
+	Class string
+	Done  bool
+}
+
+// ActiveSession returns the current session for a PR — the most recent one
+// without a completed_at. Does not check whether the PR head has moved;
+// callers deciding whether to resume must compare HeadSHA/BaseSHA themselves
+// (mirrors Iron: a session is only reusable if the corners still match).
+func (b *Brain) ActiveSession(repo string, pr int) *ReviewSession {
 	key := prKey(repo, pr)
-	var s CatchUpSession
-	var completedAt sql.NullString
+	var s ReviewSession
 	err := b.db.QueryRow(
-		`SELECT id, pr_key, old_head, new_head, old_base, new_base, files_total, files_done, created_at, completed_at
-		 FROM catch_up_sessions WHERE pr_key = ? AND completed_at IS NULL ORDER BY id DESC LIMIT 1`, key,
-	).Scan(&s.ID, &s.PRKey, &s.OldHead, &s.NewHead, &s.OldBase, &s.NewBase, &s.FilesTotal, &s.FilesDone, &s.CreatedAt, &completedAt)
+		`SELECT id, pr_key, head_sha, base_sha, goal_head, goal_base, started_at
+		 FROM review_sessions WHERE pr_key = ? AND completed_at IS NULL ORDER BY id DESC LIMIT 1`, key,
+	).Scan(&s.ID, &s.PRKey, &s.HeadSHA, &s.BaseSHA, &s.GoalHead, &s.GoalBase, &s.StartedAt)
 	if err != nil {
 		return nil
 	}
-	if completedAt.Valid {
-		s.CompletedAt = completedAt.String
-	}
+	b.hydrateSessionCounts(&s)
 	return &s
 }
 
-// CreateCatchUp creates a new catch-up session. If there's already an active
-// session for this PR, it completes it first.
-func (b *Brain) CreateCatchUp(repo string, pr int, oldHead, newHead, oldBase, newBase string, filesTotal int) (*CatchUpSession, error) {
-	key := prKey(repo, pr)
-	// Complete any existing active session.
-	b.db.Exec(`UPDATE catch_up_sessions SET completed_at = datetime('now') WHERE pr_key = ? AND completed_at IS NULL`, key)
+func (b *Brain) hydrateSessionCounts(s *ReviewSession) {
+	b.db.QueryRow(
+		`SELECT COUNT(*), COALESCE(SUM(done), 0) FROM review_session_files WHERE session_id = ?`, s.ID,
+	).Scan(&s.FilesTotal, &s.FilesDone)
+}
 
-	res, err := b.db.Exec(
-		`INSERT INTO catch_up_sessions (pr_key, old_head, new_head, old_base, new_base, files_total) VALUES (?, ?, ?, ?, ?, ?)`,
-		key, oldHead, newHead, oldBase, newBase, filesTotal)
+// CreateSession snapshots a new session for a PR with the given file list.
+// Any existing active session for the PR is completed first — only one
+// session is live at a time. goalHead / goalBase are recorded for a future
+// gate-at-completion brain advance (currently unused; see
+// project_session_gate_semantics.md).
+func (b *Brain) CreateSession(repo string, pr int, headSHA, baseSHA, goalHead, goalBase string, files []SessionFile) (*ReviewSession, error) {
+	key := prKey(repo, pr)
+	tx, err := b.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`UPDATE review_sessions SET completed_at = datetime('now') WHERE pr_key = ? AND completed_at IS NULL`, key); err != nil {
+		return nil, err
+	}
+	res, err := tx.Exec(
+		`INSERT INTO review_sessions (pr_key, head_sha, base_sha, goal_head, goal_base) VALUES (?, ?, ?, ?, ?)`,
+		key, headSHA, baseSHA, goalHead, goalBase)
 	if err != nil {
 		return nil, err
 	}
 	id, _ := res.LastInsertId()
-	return &CatchUpSession{
+	for _, f := range files {
+		done := 0
+		if f.Done {
+			done = 1
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO review_session_files (session_id, path, class, done) VALUES (?, ?, ?, ?)`,
+			id, f.Path, f.Class, done); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	s := &ReviewSession{
 		ID: id, PRKey: key,
-		OldHead: oldHead, NewHead: newHead, OldBase: oldBase, NewBase: newBase,
-		FilesTotal: filesTotal,
-	}, nil
+		HeadSHA: headSHA, BaseSHA: baseSHA,
+		GoalHead: goalHead, GoalBase: goalBase,
+	}
+	b.hydrateSessionCounts(s)
+	return s, nil
 }
 
-// CatchUpAdvanceFile increments the files_done counter and marks the session
-// complete if all files are done.
-func (b *Brain) CatchUpAdvanceFile(sessionID int64) error {
-	_, err := b.db.Exec(`UPDATE catch_up_sessions SET files_done = files_done + 1 WHERE id = ?`, sessionID)
-	if err != nil {
+// SetSessionFileDone marks a session-file as done (or not-done). If the
+// session is fully done after this write, it is auto-completed.
+func (b *Brain) SetSessionFileDone(sessionID int64, path string, done bool) error {
+	d := 0
+	if done {
+		d = 1
+	}
+	if _, err := b.db.Exec(
+		`UPDATE review_session_files SET done = ? WHERE session_id = ? AND path = ?`, d, sessionID, path,
+	); err != nil {
 		return err
 	}
-	// Auto-complete if done.
-	_, err = b.db.Exec(`UPDATE catch_up_sessions SET completed_at = datetime('now') WHERE id = ? AND files_done >= files_total`, sessionID)
+	// Auto-complete on last file done.
+	_, err := b.db.Exec(
+		`UPDATE review_sessions SET completed_at = datetime('now')
+		 WHERE id = ? AND completed_at IS NULL
+		   AND NOT EXISTS (SELECT 1 FROM review_session_files WHERE session_id = ? AND done = 0)`,
+		sessionID, sessionID)
 	return err
 }
 
-// CompleteCatchUp marks a session as completed.
-func (b *Brain) CompleteCatchUp(sessionID int64) error {
-	_, err := b.db.Exec(`UPDATE catch_up_sessions SET completed_at = datetime('now') WHERE id = ?`, sessionID)
+// CompleteSession marks a session complete regardless of its files. Used
+// when the reviewer navigates away or the session is being superseded.
+func (b *Brain) CompleteSession(sessionID int64) error {
+	_, err := b.db.Exec(`UPDATE review_sessions SET completed_at = datetime('now') WHERE id = ?`, sessionID)
 	return err
 }
 
-// AllActiveCatchUps returns all active catch-up sessions across all PRs.
-func (b *Brain) AllActiveCatchUps() []CatchUpSession {
+// SessionFiles returns the files belonging to a session, in insertion order.
+func (b *Brain) SessionFiles(sessionID int64) []SessionFile {
 	rows, err := b.db.Query(
-		`SELECT id, pr_key, old_head, new_head, old_base, new_base, files_total, files_done, created_at
-		 FROM catch_up_sessions WHERE completed_at IS NULL ORDER BY created_at DESC`)
+		`SELECT path, class, done FROM review_session_files WHERE session_id = ? ORDER BY rowid`, sessionID)
 	if err != nil {
 		return nil
 	}
 	defer rows.Close()
-	var out []CatchUpSession
+	var out []SessionFile
 	for rows.Next() {
-		var s CatchUpSession
-		if rows.Scan(&s.ID, &s.PRKey, &s.OldHead, &s.NewHead, &s.OldBase, &s.NewBase, &s.FilesTotal, &s.FilesDone, &s.CreatedAt) == nil {
+		var f SessionFile
+		var done int
+		if rows.Scan(&f.Path, &f.Class, &done) == nil {
+			f.Done = done == 1
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// AllActiveSessions returns every currently-active session across PRs.
+func (b *Brain) AllActiveSessions() []ReviewSession {
+	rows, err := b.db.Query(
+		`SELECT id, pr_key, head_sha, base_sha, goal_head, goal_base, started_at
+		 FROM review_sessions WHERE completed_at IS NULL ORDER BY started_at DESC`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []ReviewSession
+	for rows.Next() {
+		var s ReviewSession
+		if rows.Scan(&s.ID, &s.PRKey, &s.HeadSHA, &s.BaseSHA, &s.GoalHead, &s.GoalBase, &s.StartedAt) == nil {
+			b.hydrateSessionCounts(&s)
 			out = append(out, s)
 		}
 	}

@@ -131,7 +131,7 @@ func (v *prsView) rebuild(a *app) {
 			} else {
 				it.summary = fmt.Sprintf("%d new", unseen)
 			}
-			if session := a.brain.ActiveCatchUp(pr.Repo, pr.Number); session != nil {
+			if session := a.brain.ActiveSession(pr.Repo, pr.Number); session != nil {
 				it.summary += fmt.Sprintf(", ↻ %d/%d", session.FilesDone, session.FilesTotal)
 			} else {
 				reviewedStates := a.brain.AllFileReviewedStates(pr.Repo, pr.Number)

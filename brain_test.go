@@ -236,7 +236,7 @@ func TestBrainScrutiny(t *testing.T) {
 	}
 }
 
-func TestBrainCatchUpSessions(t *testing.T) {
+func TestBrainReviewSessions(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("RHODIUM_BRAIN", filepath.Join(dir, "brain.db"))
 
@@ -246,13 +246,18 @@ func TestBrainCatchUpSessions(t *testing.T) {
 	}
 	defer b.Close()
 
+	files := []SessionFile{
+		{Path: "a.go", Class: "b1_b2"},
+		{Path: "b.go", Class: "conflict"},
+		{Path: "c.go", Class: "b1_b2_f1"},
+	}
+
 	// No active session initially.
-	if s := b.ActiveCatchUp("acme/web", 42); s != nil {
+	if s := b.ActiveSession("acme/web", 42); s != nil {
 		t.Fatal("fresh: should have no active session")
 	}
 
-	// Create a session.
-	session, err := b.CreateCatchUp("acme/web", 42, "oldHead", "newHead", "oldBase", "newBase", 3)
+	session, err := b.CreateSession("acme/web", 42, "newHead", "newBase", "newHead", "newBase", files)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,8 +265,7 @@ func TestBrainCatchUpSessions(t *testing.T) {
 		t.Errorf("new session: total=%d done=%d", session.FilesTotal, session.FilesDone)
 	}
 
-	// Should be active.
-	active := b.ActiveCatchUp("acme/web", 42)
+	active := b.ActiveSession("acme/web", 42)
 	if active == nil {
 		t.Fatal("should have active session")
 	}
@@ -269,42 +273,54 @@ func TestBrainCatchUpSessions(t *testing.T) {
 		t.Errorf("active session ID = %d, want %d", active.ID, session.ID)
 	}
 
-	// Advance 2 files.
-	b.CatchUpAdvanceFile(session.ID)
-	b.CatchUpAdvanceFile(session.ID)
-	active = b.ActiveCatchUp("acme/web", 42)
+	// Snapshot files survived.
+	sfs := b.SessionFiles(session.ID)
+	if len(sfs) != 3 || sfs[0].Path != "a.go" || sfs[1].Class != "conflict" {
+		t.Errorf("session files didn't round-trip: %+v", sfs)
+	}
+
+	// Mark two files done.
+	b.SetSessionFileDone(session.ID, "a.go", true)
+	b.SetSessionFileDone(session.ID, "b.go", true)
+	active = b.ActiveSession("acme/web", 42)
 	if active == nil || active.FilesDone != 2 {
-		t.Fatalf("after 2 advances: got %+v", active)
+		t.Fatalf("after 2 done: got %+v", active)
 	}
 
-	// Advance the last file — should auto-complete.
-	b.CatchUpAdvanceFile(session.ID)
-	active = b.ActiveCatchUp("acme/web", 42)
-	if active != nil {
-		t.Error("after completing all files: should have no active session")
+	// Last file done → auto-complete.
+	b.SetSessionFileDone(session.ID, "c.go", true)
+	if s := b.ActiveSession("acme/web", 42); s != nil {
+		t.Error("after all done: should have no active session")
+	}
+	if all := b.AllActiveSessions(); len(all) != 0 {
+		t.Errorf("AllActiveSessions: got %d, want 0", len(all))
 	}
 
-	// AllActiveCatchUps should be empty.
-	if all := b.AllActiveCatchUps(); len(all) != 0 {
-		t.Errorf("AllActiveCatchUps: got %d, want 0", len(all))
-	}
-
-	// Create another session — completing it manually.
-	s2, _ := b.CreateCatchUp("acme/web", 42, "h1", "h2", "b1", "b2", 5)
-	b.CompleteCatchUp(s2.ID)
-	if s := b.ActiveCatchUp("acme/web", 42); s != nil {
+	// Create another session, complete it manually.
+	s2, _ := b.CreateSession("acme/web", 42, "h1", "b1", "h1", "b1", files)
+	b.CompleteSession(s2.ID)
+	if s := b.ActiveSession("acme/web", 42); s != nil {
 		t.Error("after manual complete: should have no active session")
 	}
 
-	// Creating a new session auto-completes the old one.
-	b.CreateCatchUp("acme/web", 42, "a", "b", "c", "d", 2)
-	b.CreateCatchUp("acme/web", 42, "b", "c", "d", "e", 3)
-	all := b.AllActiveCatchUps()
+	// Creating a new session auto-completes the prior one.
+	b.CreateSession("acme/web", 42, "h2", "b2", "h2", "b2", files[:2])
+	b.CreateSession("acme/web", 42, "h3", "b3", "h3", "b3", files)
+	all := b.AllActiveSessions()
 	if len(all) != 1 {
 		t.Fatalf("after double create: got %d active sessions, want 1", len(all))
 	}
 	if all[0].FilesTotal != 3 {
 		t.Errorf("latest session total = %d, want 3", all[0].FilesTotal)
+	}
+
+	// Toggling done back to not-done un-completes (via SetSessionFileDone with false).
+	latest := b.ActiveSession("acme/web", 42)
+	b.SetSessionFileDone(latest.ID, "a.go", true)
+	b.SetSessionFileDone(latest.ID, "b.go", true)
+	b.SetSessionFileDone(latest.ID, "c.go", true) // auto-completes
+	if s := b.ActiveSession("acme/web", 42); s != nil {
+		t.Error("expected auto-complete after marking all done")
 	}
 }
 

@@ -54,7 +54,7 @@ type app struct {
 	selectedFile   string
 	listViewOrigin view // whichever of viewTodo/viewPRs the user drilled from
 
-	catchUpSession *CatchUpSession
+	reviewSession *ReviewSession
 
 	statusMsg string
 
@@ -225,7 +225,7 @@ func (a *app) relayout() {
 func (a *app) openPR(pr PR) tea.Cmd {
 	a.listViewOrigin = a.activeView
 	a.selectedPR = &pr
-	a.catchUpSession = a.brain.ActiveCatchUp(pr.Repo, pr.Number)
+	a.reviewSession = a.brain.ActiveSession(pr.Repo, pr.Number)
 	a.activeView = viewFiles
 	a.files.rebuildDescVP(a)
 	a.pollGen++
@@ -269,7 +269,7 @@ func (a *app) prHasOutstandingWork(pr PR) bool {
 	if a.brain.NoteCountForPR(pr.Repo, pr.Number) > 0 {
 		return true
 	}
-	if a.brain.ActiveCatchUp(pr.Repo, pr.Number) != nil {
+	if a.brain.ActiveSession(pr.Repo, pr.Number) != nil {
 		return true
 	}
 	touched := a.brain.HasAnyMarks(pr.Repo, pr.Number) ||
@@ -296,12 +296,17 @@ func (a *app) outstandingPRCount() int {
 	return n
 }
 
-// advanceCatchUpSession advances the active catch-up session by one file.
-func (a *app) advanceCatchUpSession() {
-	if a.catchUpSession != nil {
-		a.brain.CatchUpAdvanceFile(a.catchUpSession.ID)
-		a.catchUpSession = a.brain.ActiveCatchUp(a.selectedPR.Repo, a.selectedPR.Number)
+// markSessionFileDone marks the given path done within the active review
+// session, if any, and auto-completes the session when it was the last
+// outstanding file. Called from the diff view after the reviewer has
+// finished a file (via full-diff catch-up resolution, auto-advance, or
+// all-hunks-marked).
+func (a *app) markSessionFileDone(path string) {
+	if a.reviewSession == nil || a.selectedPR == nil {
+		return
 	}
+	a.brain.SetSessionFileDone(a.reviewSession.ID, path, true)
+	a.reviewSession = a.brain.ActiveSession(a.selectedPR.Repo, a.selectedPR.Number)
 }
 
 // --- footer composition ---
@@ -364,7 +369,7 @@ func (a *app) onAutoAdvance(msg autoAdvanceMsg) tea.Cmd {
 		a.prs.rebuild(a)
 		if a.selectedPR != nil && prKey(a.selectedPR.Repo, a.selectedPR.Number) == msg.prKey {
 			a.files.rebuild(a)
-			a.catchUpSession = a.brain.ActiveCatchUp(a.selectedPR.Repo, a.selectedPR.Number)
+			a.reviewSession = a.brain.ActiveSession(a.selectedPR.Repo, a.selectedPR.Number)
 		}
 		a.statusMsg = fmt.Sprintf("✓ auto-caught-up %d files", len(msg.advancedFiles))
 	}

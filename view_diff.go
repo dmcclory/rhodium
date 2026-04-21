@@ -239,7 +239,7 @@ func (v *diffView) onCatchUpLoaded(a *app, msg catchUpLoadedMsg) tea.Cmd {
 		v.catchUpClass = ClassB1B2__F1F2
 		a.statusMsg = fmt.Sprintf("✓ %s: %s (auto-caught-up)", a.selectedFile, ClassB1B2__F1F2)
 		a.brain.SetFileReviewed(a.selectedPR.Repo, a.selectedPR.Number, a.selectedFile, a.selectedPR.HeadSHA, a.selectedPR.BaseSHA)
-		a.advanceCatchUpSession()
+		a.markSessionFileDone(a.selectedFile)
 		return nil
 	}
 	v.catchUpMode = true
@@ -273,7 +273,7 @@ func (v *diffView) onDiamondClassified(a *app, msg diamondClassifiedMsg) tea.Cmd
 		}
 		a.statusMsg = fmt.Sprintf("✓ %s: %s (auto-caught-up)", a.selectedFile, label)
 		a.brain.SetFileReviewed(a.selectedPR.Repo, a.selectedPR.Number, a.selectedFile, a.selectedPR.HeadSHA, a.selectedPR.BaseSHA)
-		a.advanceCatchUpSession()
+		a.markSessionFileDone(a.selectedFile)
 		return nil
 	}
 
@@ -508,6 +508,9 @@ func (v *diffView) saveMarks(a *app) {
 	}
 	if a.selectedPR.HeadSHA != "" {
 		a.brain.SetFileReviewed(a.selectedPR.Repo, a.selectedPR.Number, a.selectedFile, a.selectedPR.HeadSHA, a.selectedPR.BaseSHA)
+	}
+	if v.allMarked() {
+		a.markSessionFileDone(a.selectedFile)
 	}
 }
 

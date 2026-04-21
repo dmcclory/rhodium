@@ -200,7 +200,7 @@ func buildTodoItem(a *app, pr PR) *todoItem {
 		return nil
 	}
 	notes := a.brain.NoteCountForPR(pr.Repo, pr.Number)
-	cu := a.brain.ActiveCatchUp(pr.Repo, pr.Number)
+	cu := a.brain.ActiveSession(pr.Repo, pr.Number)
 	touched := a.brain.HasAnyMarks(pr.Repo, pr.Number) ||
 		len(a.brain.AllFileReviewedStates(pr.Repo, pr.Number)) > 0
 

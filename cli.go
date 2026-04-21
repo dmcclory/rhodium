@@ -300,8 +300,8 @@ func cmdTodo(args []string) error {
 		byKey[prKey(p.Repo, p.Number)] = p
 	}
 
-	catchUps := map[string]*CatchUpSession{}
-	sessions := brain.AllActiveCatchUps()
+	catchUps := map[string]*ReviewSession{}
+	sessions := brain.AllActiveSessions()
 	for i := range sessions {
 		catchUps[sessions[i].PRKey] = &sessions[i]
 	}
