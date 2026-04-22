@@ -3,8 +3,8 @@ package main
 import (
 	"fmt"
 	"strings"
+	"unicode"
 
-	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -93,9 +93,9 @@ func (v *diffView) View(a *app) string {
 func (v *diffView) Footer(a *app) string {
 	if v.noting {
 		if v.mention.open {
-			return "@-mention  ↑/↓: nav  /: filter  enter: insert  esc: close"
+			return "@-mention  ↑/↓: nav  type to filter  enter: insert  esc: close"
 		}
-		return fmt.Sprintf("line %d  ctrl+d: save  ctrl+a: @mention  esc: cancel", v.noteLineNo)
+		return fmt.Sprintf("line %d  ctrl+d: save  type @ to mention  esc: cancel", v.noteLineNo)
 	}
 	marked := 0
 	total := 0
@@ -586,26 +586,62 @@ func (v *diffView) updateNotingKeys(a *app, msg tea.KeyMsg) tea.Cmd {
 			}
 		}
 		return nil
-	case "ctrl+a":
-		return v.openMentionPicker(a)
+	case "@":
+		// Check boundary *before* the textarea inserts the @ — afterwards
+		// the char before the cursor is the @ itself.
+		trigger := v.atMentionBoundary()
+		var cmd tea.Cmd
+		v.noteInput, cmd = v.noteInput.Update(msg)
+		if !trigger {
+			return cmd
+		}
+		if openCmd := v.openMentionPicker(a); openCmd != nil {
+			return tea.Batch(cmd, openCmd)
+		}
+		return cmd
 	}
 	var cmd tea.Cmd
 	v.noteInput, cmd = v.noteInput.Update(msg)
 	return cmd
 }
 
+// atMentionBoundary reports whether the cursor is at a spot where typing
+// `@` should open the mention picker — i.e. at the start of a line or
+// right after whitespace. This keeps email-like text ("foo@bar.com") from
+// triggering the picker.
+func (v *diffView) atMentionBoundary() bool {
+	li := v.noteInput.LineInfo()
+	col := li.StartColumn + li.ColumnOffset
+	if col <= 0 {
+		return true
+	}
+	row := v.noteInput.Line()
+	lines := strings.Split(v.noteInput.Value(), "\n")
+	if row < 0 || row >= len(lines) {
+		return true
+	}
+	runes := []rune(lines[row])
+	if col > len(runes) {
+		return true
+	}
+	return unicode.IsSpace(runes[col-1])
+}
+
 // openMentionPicker shows the @-picker over the textarea. Contributors are
-// fetched lazily per repo; a second ctrl+a press in the same session uses
-// the cache and is instant.
+// fetched lazily per repo; subsequent opens in the same session use the
+// cache and are instant. The picker opens with an empty query showing the
+// full contributor list.
 func (v *diffView) openMentionPicker(a *app) tea.Cmd {
 	if a.selectedPR == nil {
 		return nil
 	}
 	repo := a.selectedPR.Repo
 	v.mention.open = true
+	v.mention.query = ""
 	if cached, ok := a.contributors[repo]; ok {
 		v.mention.loading = false
-		v.mention.list.SetItems(contributorsToItems(cached))
+		v.mention.list.SetItems(filterContributors(cached, ""))
+		v.mention.list.ResetSelected()
 		v.sizeMentionPicker(a)
 		return nil
 	}
@@ -624,7 +660,7 @@ func (v *diffView) onContributorsReady(a *app, repo string) {
 		return
 	}
 	v.mention.loading = false
-	v.mention.list.SetItems(contributorsToItems(a.contributors[repo]))
+	v.mention.list.SetItems(filterContributors(a.contributors[repo], v.mention.query))
 	v.sizeMentionPicker(a)
 }
 
@@ -643,36 +679,111 @@ func (v *diffView) sizeMentionPicker(a *app) {
 	v.mention.list.SetSize(w, h)
 }
 
-// updateMentionKeys routes keys while the mention picker is open.
-// esc closes without inserting; enter inserts `@<login> ` at the textarea
-// cursor and closes; typing feeds the list's filter (bubbles/list has its
-// own filter gestures: `/` starts, esc clears, enter applies).
+// updateMentionKeys routes keys while the mention picker is open. The
+// picker sits over the noting textarea and runs in a dual-input model:
+// printable keys are forwarded to the textarea (so the user sees their
+// `@query` building up) and also drive a live filter over the contributor
+// list. Enter replaces the typed `@query` fragment with `@<login> `; esc
+// leaves the text untouched. Cursor-motion and other non-login keys close
+// the picker and fall through to the textarea.
 func (v *diffView) updateMentionKeys(a *app, msg tea.KeyMsg) tea.Cmd {
 	switch msg.String() {
 	case "esc":
-		// If the list is in a filter-editing state, let bubbles consume esc
-		// (clears the filter) before we close the picker.
-		if v.mention.list.FilterState() == list.Filtering {
-			break
-		}
 		v.mention.open = false
 		return nil
 	case "enter":
-		if v.mention.list.FilterState() == list.Filtering {
-			// Let bubbles accept the filter first, then fall through on the
-			// next enter press. Returning the list's update keeps behaviour
-			// consistent with the rest of the app.
-			break
-		}
-		if it, ok := v.mention.list.SelectedItem().(mentionItem); ok {
-			v.noteInput.InsertString("@" + it.login + " ")
-		}
+		return v.acceptMention()
+	case "up", "down", "tab", "shift+tab":
+		var cmd tea.Cmd
+		v.mention.list, cmd = v.mention.list.Update(msg)
+		return cmd
+	case "backspace", "ctrl+h":
+		return v.mentionBackspace(a, msg)
+	}
+
+	if len(msg.Runes) == 1 && isMentionChar(msg.Runes[0]) {
+		return v.mentionTypeRune(a, msg)
+	}
+
+	// Any other key (space, punctuation, cursor motion, ctrl+u, etc.)
+	// closes the picker and flows through to the textarea so the user's
+	// intent — typing, navigating, deleting a word — still happens.
+	v.mention.open = false
+	var cmd tea.Cmd
+	v.noteInput, cmd = v.noteInput.Update(msg)
+	return cmd
+}
+
+// mentionTypeRune appends a char to the query and refreshes the filtered list.
+func (v *diffView) mentionTypeRune(a *app, msg tea.KeyMsg) tea.Cmd {
+	var cmd tea.Cmd
+	v.noteInput, cmd = v.noteInput.Update(msg)
+	v.mention.query += string(msg.Runes[0])
+	v.refilterMentions(a)
+	return cmd
+}
+
+// mentionBackspace pops a char off the query. If the query was already
+// empty the backspace deletes the leading `@` and we close the picker.
+func (v *diffView) mentionBackspace(a *app, msg tea.KeyMsg) tea.Cmd {
+	if v.mention.query == "" {
+		v.mention.open = false
+		var cmd tea.Cmd
+		v.noteInput, cmd = v.noteInput.Update(msg)
+		return cmd
+	}
+	runes := []rune(v.mention.query)
+	v.mention.query = string(runes[:len(runes)-1])
+	var cmd tea.Cmd
+	v.noteInput, cmd = v.noteInput.Update(msg)
+	v.refilterMentions(a)
+	return cmd
+}
+
+func (v *diffView) refilterMentions(a *app) {
+	if a.selectedPR == nil {
+		return
+	}
+	cached, ok := a.contributors[a.selectedPR.Repo]
+	if !ok {
+		return
+	}
+	v.mention.list.SetItems(filterContributors(cached, v.mention.query))
+	v.mention.list.ResetSelected()
+}
+
+// acceptMention replaces the typed `@<query>` fragment in the textarea
+// with `@<login> ` by rewinding len(query)+1 backspaces through the
+// textarea and then inserting the chosen login.
+func (v *diffView) acceptMention() tea.Cmd {
+	it, ok := v.mention.list.SelectedItem().(mentionItem)
+	if !ok {
 		v.mention.open = false
 		return nil
 	}
-	var cmd tea.Cmd
-	v.mention.list, cmd = v.mention.list.Update(msg)
-	return cmd
+	bs := tea.KeyMsg{Type: tea.KeyBackspace}
+	for i := 0; i < len([]rune(v.mention.query))+1; i++ {
+		v.noteInput, _ = v.noteInput.Update(bs)
+	}
+	v.noteInput.InsertString("@" + it.login + " ")
+	v.mention.open = false
+	return nil
+}
+
+// isMentionChar is true for characters allowed in a GitHub login — typing
+// one extends the filter query; anything else closes the picker.
+func isMentionChar(r rune) bool {
+	switch {
+	case r >= 'a' && r <= 'z':
+		return true
+	case r >= 'A' && r <= 'Z':
+		return true
+	case r >= '0' && r <= '9':
+		return true
+	case r == '-' || r == '_':
+		return true
+	}
+	return false
 }
 
 func (v *diffView) updateKeys(a *app, msg tea.KeyMsg) tea.Cmd {

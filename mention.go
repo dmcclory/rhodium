@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
@@ -9,9 +10,10 @@ import (
 )
 
 // mentionPicker is a small modal shown over the noting textarea when the
-// user presses ctrl+a. It lists the repo's contributors (top-contributors
-// first) with bubbles' built-in filter; pressing enter inserts `@login ` at
-// the textarea's cursor and closes the modal.
+// user types `@` at a word boundary. It lists the repo's contributors
+// (top-contributors first); subsequent keystrokes both extend the note text
+// and filter the list against `query`. Pressing enter replaces the typed
+// `@query` fragment with `@login ` and closes the modal.
 //
 // Contributors are fetched lazily on first open and cached on the app —
 // see app.contributors. A picker opened before the fetch returns shows
@@ -19,6 +21,7 @@ import (
 type mentionPicker struct {
 	open    bool
 	loading bool
+	query   string
 	list    list.Model
 }
 
@@ -40,15 +43,20 @@ func newMentionPicker() mentionPicker {
 	l.SetShowHelp(false)
 	l.SetShowTitle(false)
 	l.SetShowStatusBar(false)
-	l.SetFilteringEnabled(true)
+	l.SetFilteringEnabled(false)
 	l.Title = ""
 	return mentionPicker{list: l}
 }
 
-func contributorsToItems(contribs []Contributor) []list.Item {
+// filterContributors returns items whose login contains query as a
+// case-insensitive substring. An empty query matches everything.
+func filterContributors(contribs []Contributor, query string) []list.Item {
+	q := strings.ToLower(query)
 	items := make([]list.Item, 0, len(contribs))
 	for _, c := range contribs {
-		items = append(items, mentionItem{login: c.Login, contributions: c.Contributions})
+		if q == "" || strings.Contains(strings.ToLower(c.Login), q) {
+			items = append(items, mentionItem{login: c.Login, contributions: c.Contributions})
+		}
 	}
 	return items
 }
