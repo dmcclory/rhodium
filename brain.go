@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"embed"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -506,6 +507,98 @@ func (b *Brain) Close() error {
 	return b.db.Close()
 }
 
+// Event is a single row from brain_events: one mutation of brain state.
+// Payload stays as raw JSON here; callers that care about the shape
+// per-kind unmarshal it themselves.
+type Event struct {
+	ID      int64
+	TS      string
+	Kind    string
+	PRKey   string
+	Path    string
+	Payload string
+}
+
+// EventFilter narrows RecentEvents. Zero-value fields are ignored, so
+// an empty filter returns the most recent events across the whole brain.
+// KindPrefix matches via SQL LIKE so "mark." grabs both mark.set and
+// mark.clear. Limit <= 0 defaults to 100 — the log is append-only and
+// can grow without bound, so callers should always page.
+type EventFilter struct {
+	PRKey      string
+	KindPrefix string
+	Limit      int
+}
+
+// execer is the shared subset of *sql.DB and *sql.Tx that logEvent needs,
+// so mutators already holding a transaction can write the state change
+// and its event atomically.
+type execer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+// logEvent appends one row to brain_events. Callers inside a transaction
+// must pass that tx as x so the event shares the state write's atomicity
+// — if the tx rolls back, no orphan event survives. Payload is marshalled
+// to JSON; a nil payload becomes "{}".
+func logEvent(x execer, kind, prKey, path string, payload any) error {
+	var body string
+	if payload == nil {
+		body = "{}"
+	} else {
+		buf, err := json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("marshal event payload: %w", err)
+		}
+		body = string(buf)
+	}
+	_, err := x.Exec(
+		`INSERT INTO brain_events (kind, pr_key, path, payload) VALUES (?, ?, ?, ?)`,
+		kind, prKey, path, body)
+	return err
+}
+
+// RecentEvents returns events in reverse-chronological order (newest
+// first) subject to the filter. Intended for a future `rhodium brain
+// log` CLI; exposed now so tests can assert the log is being populated.
+func (b *Brain) RecentEvents(filter EventFilter) []Event {
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	var (
+		where []string
+		args  []any
+	)
+	if filter.PRKey != "" {
+		where = append(where, `pr_key = ?`)
+		args = append(args, filter.PRKey)
+	}
+	if filter.KindPrefix != "" {
+		where = append(where, `kind LIKE ?`)
+		args = append(args, filter.KindPrefix+"%")
+	}
+	q := `SELECT id, ts, kind, pr_key, path, payload FROM brain_events`
+	if len(where) > 0 {
+		q += ` WHERE ` + strings.Join(where, ` AND `)
+	}
+	q += ` ORDER BY id DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := b.db.Query(q, args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []Event
+	for rows.Next() {
+		var e Event
+		if rows.Scan(&e.ID, &e.TS, &e.Kind, &e.PRKey, &e.Path, &e.Payload) == nil {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // ReviewSession is an ordered snapshot of the diff set the reviewer is
 // stepping through, kept stable across a single reviewing pass even if the
 // PR moves under them. Iron calls this the `Review_session`, separate from
@@ -573,8 +666,22 @@ func (b *Brain) CreateSession(repo string, pr int, headSHA, baseSHA, goalHead, g
 	}
 	defer tx.Rollback()
 
+	// Capture any active session we're about to supersede so we can emit a
+	// session.complete event for it — replay-from-events needs to see the
+	// same "creating implicitly completes prior" invariant.
+	var superseded sql.NullInt64
+	if err := tx.QueryRow(
+		`SELECT id FROM review_sessions WHERE pr_key = ? AND completed_at IS NULL ORDER BY id DESC LIMIT 1`, key,
+	).Scan(&superseded); err != nil && err != sql.ErrNoRows {
+		return nil, err
+	}
 	if _, err := tx.Exec(`UPDATE review_sessions SET completed_at = datetime('now') WHERE pr_key = ? AND completed_at IS NULL`, key); err != nil {
 		return nil, err
+	}
+	if superseded.Valid {
+		if err := logEvent(tx, "session.complete", key, "", map[string]any{"session_id": superseded.Int64, "reason": "superseded"}); err != nil {
+			return nil, err
+		}
 	}
 	res, err := tx.Exec(
 		`INSERT INTO review_sessions (pr_key, head_sha, base_sha, goal_head, goal_base) VALUES (?, ?, ?, ?, ?)`,
@@ -594,6 +701,17 @@ func (b *Brain) CreateSession(repo string, pr int, headSHA, baseSHA, goalHead, g
 			return nil, err
 		}
 	}
+	payload := map[string]any{
+		"session_id": id,
+		"head_sha":   headSHA,
+		"base_sha":   baseSHA,
+		"goal_head":  goalHead,
+		"goal_base":  goalBase,
+		"files":      files,
+	}
+	if err := logEvent(tx, "session.create", key, "", payload); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
@@ -607,31 +725,81 @@ func (b *Brain) CreateSession(repo string, pr int, headSHA, baseSHA, goalHead, g
 }
 
 // SetSessionFileDone marks a session-file as done (or not-done). If the
-// session is fully done after this write, it is auto-completed.
+// session is fully done after this write, it is auto-completed (and the
+// event log captures both the file toggle and the auto-complete).
 func (b *Brain) SetSessionFileDone(sessionID int64, path string, done bool) error {
 	d := 0
 	if done {
 		d = 1
 	}
-	if _, err := b.db.Exec(
+	tx, err := b.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Resolve pr_key up front so events for this session scope correctly.
+	var key string
+	if err := tx.QueryRow(`SELECT pr_key FROM review_sessions WHERE id = ?`, sessionID).Scan(&key); err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return err
+	}
+
+	if _, err := tx.Exec(
 		`UPDATE review_session_files SET done = ? WHERE session_id = ? AND path = ?`, d, sessionID, path,
 	); err != nil {
 		return err
 	}
-	// Auto-complete on last file done.
-	_, err := b.db.Exec(
+	if err := logEvent(tx, "session.file.done", key, path, map[string]any{"session_id": sessionID, "done": done}); err != nil {
+		return err
+	}
+	res, err := tx.Exec(
 		`UPDATE review_sessions SET completed_at = datetime('now')
 		 WHERE id = ? AND completed_at IS NULL
 		   AND NOT EXISTS (SELECT 1 FROM review_session_files WHERE session_id = ? AND done = 0)`,
 		sessionID, sessionID)
-	return err
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		if err := logEvent(tx, "session.complete", key, "", map[string]any{"session_id": sessionID, "reason": "auto"}); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // CompleteSession marks a session complete regardless of its files. Used
 // when the reviewer navigates away or the session is being superseded.
+// Emits session.complete only when the UPDATE actually transitions the
+// row from incomplete → complete, so repeated calls don't spam events.
 func (b *Brain) CompleteSession(sessionID int64) error {
-	_, err := b.db.Exec(`UPDATE review_sessions SET completed_at = datetime('now') WHERE id = ?`, sessionID)
-	return err
+	tx, err := b.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var key string
+	var completed sql.NullString
+	if err := tx.QueryRow(
+		`SELECT pr_key, completed_at FROM review_sessions WHERE id = ?`, sessionID,
+	).Scan(&key, &completed); err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE review_sessions SET completed_at = datetime('now') WHERE id = ?`, sessionID); err != nil {
+		return err
+	}
+	if !completed.Valid {
+		if err := logEvent(tx, "session.complete", key, "", map[string]any{"session_id": sessionID, "reason": "manual"}); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // SessionFiles returns the files belonging to a session, in insertion order.
@@ -685,12 +853,24 @@ func (b *Brain) IsScrutinized(repo string, pr int) bool {
 // SetScrutiny marks or unmarks a PR for scrutiny.
 func (b *Brain) SetScrutiny(repo string, pr int, on bool) error {
 	key := prKey(repo, pr)
-	if on {
-		_, err := b.db.Exec(`INSERT OR IGNORE INTO pr_scrutiny (pr_key) VALUES (?)`, key)
+	tx, err := b.db.Begin()
+	if err != nil {
 		return err
 	}
-	_, err := b.db.Exec(`DELETE FROM pr_scrutiny WHERE pr_key = ?`, key)
-	return err
+	defer tx.Rollback()
+	if on {
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO pr_scrutiny (pr_key) VALUES (?)`, key); err != nil {
+			return err
+		}
+	} else {
+		if _, err := tx.Exec(`DELETE FROM pr_scrutiny WHERE pr_key = ?`, key); err != nil {
+			return err
+		}
+	}
+	if err := logEvent(tx, "scrutiny.set", key, "", map[string]any{"on": on}); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (b *Brain) HasAnyMarks(repo string, pr int) bool {
@@ -724,12 +904,47 @@ func (b *Brain) SetHunkMarks(repo string, pr int, path string, marks map[string]
 		return err
 	}
 	defer tx.Rollback()
+
+	// Snapshot prior marks before the bulk replace so we can emit one event
+	// per actual toggle (rather than one coarse "marks.replace"). Per-hunk
+	// events make future per-hunk undo trivial.
+	prior := map[string]bool{}
+	rows, err := tx.Query(`SELECT hunk_hash FROM hunk_marks WHERE pr_key = ? AND path = ?`, key, path)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			rows.Close()
+			return err
+		}
+		prior[h] = true
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+
 	if _, err := tx.Exec(`DELETE FROM hunk_marks WHERE pr_key = ? AND path = ?`, key, path); err != nil {
 		return err
 	}
 	for h, on := range marks {
 		if on {
 			if _, err := tx.Exec(`INSERT INTO hunk_marks (pr_key, path, hunk_hash) VALUES (?, ?, ?)`, key, path, h); err != nil {
+				return err
+			}
+		}
+	}
+	for h, on := range marks {
+		if on && !prior[h] {
+			if err := logEvent(tx, "mark.set", key, path, map[string]string{"hunk_hash": h}); err != nil {
+				return err
+			}
+		}
+	}
+	for h := range prior {
+		if !marks[h] {
+			if err := logEvent(tx, "mark.clear", key, path, map[string]string{"hunk_hash": h}); err != nil {
 				return err
 			}
 		}
@@ -875,35 +1090,118 @@ func (b *Brain) NotesForFile(repo string, pr int, path string) []Note {
 }
 
 func (b *Brain) SaveNote(repo string, pr int, path string, lineNo int, lineHash, body string) error {
-	key := prKey(repo, pr)
-	_, err := b.db.Exec(
-		`INSERT INTO notes (pr_key, path, line_no, line_hash, body, source) VALUES (?, ?, ?, ?, ?, 'human')`,
-		key, path, lineNo, lineHash, body)
-	return err
+	return b.insertNote(prKey(repo, pr), path, lineNo, lineHash, body, "human")
+}
+
+// insertNote is the shared path for human and agent notes: one tx that
+// writes the row and the note.add event. The event payload carries the
+// full body so a future replay-from-events can reconstruct the note even
+// if the row has since been hard-deleted.
+func (b *Brain) insertNote(key, path string, lineNo int, lineHash, body, source string) error {
+	tx, err := b.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(
+		`INSERT INTO notes (pr_key, path, line_no, line_hash, body, source) VALUES (?, ?, ?, ?, ?, ?)`,
+		key, path, lineNo, lineHash, body, source)
+	if err != nil {
+		return err
+	}
+	id, _ := res.LastInsertId()
+	payload := map[string]any{
+		"note_id":   id,
+		"line_no":   lineNo,
+		"line_hash": lineHash,
+		"source":    source,
+		"body":      body,
+	}
+	if err := logEvent(tx, "note.add", key, path, payload); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // SaveAgentNote records a note produced by an inline-notes action. Agents
 // don't see per-line hashes so line_hash stays empty; source="agent" keeps
 // these filterable away from human notes in future UI work.
 func (b *Brain) SaveAgentNote(repo string, pr int, path string, lineNo int, body string) error {
-	key := prKey(repo, pr)
-	_, err := b.db.Exec(
-		`INSERT INTO notes (pr_key, path, line_no, line_hash, body, source) VALUES (?, ?, ?, '', ?, 'agent')`,
-		key, path, lineNo, body)
-	return err
+	return b.insertNote(prKey(repo, pr), path, lineNo, "", body, "agent")
 }
 
 // ResolveNote marks a note as resolved (soft delete — the row stays so
 // `rhodium notes --all` can show history). Idempotent: resolving an
-// already-resolved note is a no-op.
+// already-resolved or missing note is a no-op and emits no event.
 func (b *Brain) ResolveNote(id int64) error {
-	_, err := b.db.Exec(`UPDATE notes SET resolved_at = datetime('now') WHERE id = ? AND resolved_at IS NULL`, id)
-	return err
+	tx, err := b.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var key, path string
+	var resolved sql.NullString
+	switch err = tx.QueryRow(
+		`SELECT pr_key, path, resolved_at FROM notes WHERE id = ?`, id,
+	).Scan(&key, &path, &resolved); err {
+	case sql.ErrNoRows:
+		return nil
+	case nil:
+	default:
+		return err
+	}
+	if resolved.Valid {
+		return nil
+	}
+	if _, err := tx.Exec(`UPDATE notes SET resolved_at = datetime('now') WHERE id = ?`, id); err != nil {
+		return err
+	}
+	if err := logEvent(tx, "note.resolve", key, path, map[string]any{"note_id": id}); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
+// DeleteNote hard-deletes a note row. The event payload captures the
+// deleted row's contents (body, line anchor, source, resolved_at) so a
+// future undo/replay can resurrect the note without any other source.
 func (b *Brain) DeleteNote(id int64) error {
-	_, err := b.db.Exec(`DELETE FROM notes WHERE id = ?`, id)
-	return err
+	tx, err := b.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var (
+		key, path, body, source, lineHash string
+		lineNo                             int
+		resolved                           sql.NullString
+	)
+	switch err = tx.QueryRow(
+		`SELECT pr_key, path, line_no, line_hash, body, source, resolved_at FROM notes WHERE id = ?`, id,
+	).Scan(&key, &path, &lineNo, &lineHash, &body, &source, &resolved); err {
+	case sql.ErrNoRows:
+		return nil
+	case nil:
+	default:
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM notes WHERE id = ?`, id); err != nil {
+		return err
+	}
+	payload := map[string]any{
+		"note_id":   id,
+		"line_no":   lineNo,
+		"line_hash": lineHash,
+		"source":    source,
+		"body":      body,
+	}
+	if resolved.Valid {
+		payload["resolved_at"] = resolved.String
+	}
+	if err := logEvent(tx, "note.delete", key, path, payload); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (b *Brain) Status(repo string, pr int, fc FileChange) FileStatus {
@@ -938,12 +1236,23 @@ type FileReviewState struct {
 // reviewed. Called alongside mark saves so we know what version the reviewer saw.
 func (b *Brain) SetFileReviewed(repo string, pr int, path, headSHA, baseSHA string) error {
 	key := prKey(repo, pr)
-	_, err := b.db.Exec(`
+	tx, err := b.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`
 		INSERT INTO file_reviews (pr_key, path, head_sha, base_sha, reviewed_at)
 		VALUES (?, ?, ?, ?, datetime('now'))
 		ON CONFLICT (pr_key, path) DO UPDATE SET head_sha = excluded.head_sha, base_sha = excluded.base_sha, reviewed_at = excluded.reviewed_at`,
-		key, path, headSHA, baseSHA)
-	return err
+		key, path, headSHA, baseSHA); err != nil {
+		return err
+	}
+	payload := map[string]any{"head_sha": headSHA, "base_sha": baseSHA}
+	if err := logEvent(tx, "file.reviewed", key, path, payload); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // FileReviewedState returns the head and base SHAs the reviewer last saw for

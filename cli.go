@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"text/tabwriter"
 )
 
 func runCLI(args []string) error {
@@ -66,11 +67,15 @@ Usage:
   rhodium note <owner/repo#N> <file> <line> <body>  add a note (body "-" reads from stdin)
   rhodium resolve <note-id>...                      mark one or more notes resolved
   rhodium brain status                              inspect the brain db (path, schema version, pending migrations)
+  rhodium brain log [--pr ref] [--kind p] [--limit N]  print the brain mutation log, newest first
 
 Flags:
-  --json    emit JSON (notes, todo, state)
+  --json    emit JSON (notes, todo, state, brain log)
   --sync    (todo only) refresh the PR cache from GitHub before printing
-  --all     (notes only) include resolved notes`)
+  --all     (notes only) include resolved notes
+  --pr      (brain log) filter to one PR (owner/repo#N)
+  --kind    (brain log) filter by kind prefix (mark., note., session., ...)
+  --limit   (brain log) max events to return (default 100)`)
 }
 
 var prRefRE = regexp.MustCompile(`^([^/]+/[^/#]+)[#/](\d+)$`)
@@ -89,13 +94,15 @@ func parsePRRef(s string) (repo string, number int, err error) {
 
 func cmdBrain(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: rhodium brain status")
+		return fmt.Errorf("usage: rhodium brain {status|log}")
 	}
 	switch args[0] {
 	case "status":
 		return cmdBrainStatus(args[1:])
+	case "log":
+		return cmdBrainLog(args[1:])
 	default:
-		return fmt.Errorf("unknown brain subcommand: %s (try 'status')", args[0])
+		return fmt.Errorf("unknown brain subcommand: %s (try 'status' or 'log')", args[0])
 	}
 }
 
@@ -154,6 +161,100 @@ func cmdBrainStatus(args []string) error {
 		}
 	}
 	return nil
+}
+
+// logJSONEvent is the on-wire shape for `brain log --json`: the stored
+// payload is unmarshalled into json.RawMessage so downstream consumers
+// (a future `brain replay`) get a real JSON object, not a string.
+type logJSONEvent struct {
+	ID      int64           `json:"id"`
+	TS      string          `json:"ts"`
+	Kind    string          `json:"kind"`
+	PRKey   string          `json:"pr_key,omitempty"`
+	Path    string          `json:"path,omitempty"`
+	Payload json.RawMessage `json:"payload"`
+}
+
+// cmdBrainLog prints the append-only brain_events log, newest first.
+// Filters (--pr, --kind) narrow the result server-side; --limit caps the
+// page size (RecentEvents default is 100). --json emits JSONL suitable
+// for piping into a future `brain replay`.
+func cmdBrainLog(args []string) error {
+	// Parse args directly — splitFlags mis-handles value-taking flags
+	// like --limit 20, and this subcommand has no positional args.
+	fs := flag.NewFlagSet("brain log", flag.ContinueOnError)
+	prRef := fs.String("pr", "", "filter to one PR (owner/repo#N)")
+	kind := fs.String("kind", "", "filter by kind prefix (e.g. mark., note., session.)")
+	limit := fs.Int("limit", 100, "max events to return")
+	asJSON := fs.Bool("json", false, "emit JSONL")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	filter := EventFilter{KindPrefix: *kind, Limit: *limit}
+	if *prRef != "" {
+		repo, num, err := parsePRRef(*prRef)
+		if err != nil {
+			return err
+		}
+		filter.PRKey = prKey(repo, num)
+	}
+
+	brain, err := LoadBrain()
+	if err != nil {
+		return err
+	}
+	defer brain.Close()
+
+	events := brain.RecentEvents(filter)
+
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		for _, e := range events {
+			raw := json.RawMessage(e.Payload)
+			if len(raw) == 0 {
+				raw = json.RawMessage("{}")
+			}
+			if err := enc.Encode(logJSONEvent{
+				ID: e.ID, TS: e.TS, Kind: e.Kind,
+				PRKey: e.PRKey, Path: e.Path, Payload: raw,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	if len(events) == 0 {
+		fmt.Println("brain log: no events")
+		return nil
+	}
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	for _, e := range events {
+		payload := compactJSON(e.Payload)
+		fmt.Fprintf(tw, "#%d\t%s\t%s\t%s\t%s\t%s\n",
+			e.ID, e.TS, e.Kind, e.PRKey, e.Path, payload)
+	}
+	return tw.Flush()
+}
+
+// compactJSON re-serializes a stored payload without whitespace. Stored
+// payloads are already produced by json.Marshal and therefore compact,
+// but a manual re-marshal keeps us robust to future hand-written rows
+// and normalizes field ordering for readable log output.
+func compactJSON(raw string) string {
+	if raw == "" {
+		return "{}"
+	}
+	var v any
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		return raw
+	}
+	buf, err := json.Marshal(v)
+	if err != nil {
+		return raw
+	}
+	return string(buf)
 }
 
 // cmdNotes prints notes for a single PR.

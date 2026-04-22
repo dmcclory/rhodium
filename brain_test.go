@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"testing"
 )
@@ -373,5 +374,343 @@ func TestBrainNotes(t *testing.T) {
 	// Notes on a different file shouldn't appear.
 	if notes := b.NotesForFile("acme/web", 42, "other.go"); len(notes) != 0 {
 		t.Fatalf("other file: got %d notes, want 0", len(notes))
+	}
+}
+
+// eventPayload unmarshals an Event's JSON payload into a generic map for
+// field-level assertions. Caller passes the Event.Payload string.
+func eventPayload(t *testing.T, raw string) map[string]any {
+	t.Helper()
+	var out map[string]any
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		t.Fatalf("unmarshal payload %q: %v", raw, err)
+	}
+	return out
+}
+
+// kindsOf returns the kind strings of the given events in their original
+// (newest-first) order. Handy for asserting the sequence of events a
+// single mutator call produced without over-specifying payload contents.
+func kindsOf(evs []Event) []string {
+	out := make([]string, len(evs))
+	for i, e := range evs {
+		out[i] = e.Kind
+	}
+	return out
+}
+
+func TestBrainEventsMarks(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("RHODIUM_BRAIN", filepath.Join(dir, "brain.db"))
+	b, err := LoadBrain()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+
+	hunks := parseHunks(samplePatch)
+	h0, h1 := hunks[0].Hash, hunks[1].Hash
+
+	// First write: both hunks turning on → two mark.set, zero mark.clear.
+	if err := b.SetHunkMarks("acme/web", 42, "src/main.go", map[string]bool{h0: true, h1: true}); err != nil {
+		t.Fatal(err)
+	}
+	evs := b.RecentEvents(EventFilter{PRKey: "acme/web#42", KindPrefix: "mark."})
+	if len(evs) != 2 {
+		t.Fatalf("after first write: got %d mark events, want 2", len(evs))
+	}
+	seen := map[string]bool{}
+	for _, e := range evs {
+		if e.Kind != "mark.set" {
+			t.Errorf("first write: got kind %q, want mark.set", e.Kind)
+		}
+		if e.Path != "src/main.go" {
+			t.Errorf("path: got %q, want src/main.go", e.Path)
+		}
+		p := eventPayload(t, e.Payload)
+		seen[p["hunk_hash"].(string)] = true
+	}
+	if !seen[h0] || !seen[h1] {
+		t.Errorf("expected both hunk hashes in events, got %v", seen)
+	}
+
+	// Second write: drop h0, keep h1 → one mark.clear for h0, zero sets.
+	if err := b.SetHunkMarks("acme/web", 42, "src/main.go", map[string]bool{h1: true}); err != nil {
+		t.Fatal(err)
+	}
+	evs = b.RecentEvents(EventFilter{PRKey: "acme/web#42", KindPrefix: "mark.", Limit: 1})
+	if len(evs) != 1 || evs[0].Kind != "mark.clear" {
+		t.Fatalf("drop h0: got %v, want [mark.clear]", kindsOf(evs))
+	}
+	if p := eventPayload(t, evs[0].Payload); p["hunk_hash"] != h0 {
+		t.Errorf("clear payload: got %v, want hunk_hash=%s", p, h0)
+	}
+
+	// Third write: same set → no new events (nothing toggled).
+	before := len(b.RecentEvents(EventFilter{KindPrefix: "mark.", Limit: 100}))
+	if err := b.SetHunkMarks("acme/web", 42, "src/main.go", map[string]bool{h1: true}); err != nil {
+		t.Fatal(err)
+	}
+	after := len(b.RecentEvents(EventFilter{KindPrefix: "mark.", Limit: 100}))
+	if after != before {
+		t.Errorf("no-op write emitted events: before=%d after=%d", before, after)
+	}
+}
+
+func TestBrainEventsNotes(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("RHODIUM_BRAIN", filepath.Join(dir, "brain.db"))
+	b, err := LoadBrain()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+
+	if err := b.SaveNote("acme/web", 42, "src/main.go", 10, "hash1", "hello"); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.SaveAgentNote("acme/web", 42, "src/main.go", 20, "from agent"); err != nil {
+		t.Fatal(err)
+	}
+
+	adds := b.RecentEvents(EventFilter{PRKey: "acme/web#42", KindPrefix: "note.add"})
+	if len(adds) != 2 {
+		t.Fatalf("expected 2 note.add events, got %d", len(adds))
+	}
+	// Newest first: agent note was saved second.
+	agent := eventPayload(t, adds[0].Payload)
+	if agent["source"] != "agent" || agent["body"] != "from agent" || agent["line_hash"] != "" {
+		t.Errorf("agent note payload: %v", agent)
+	}
+	human := eventPayload(t, adds[1].Payload)
+	if human["source"] != "human" || human["body"] != "hello" || human["line_hash"] != "hash1" {
+		t.Errorf("human note payload: %v", human)
+	}
+	if _, ok := human["note_id"]; !ok {
+		t.Error("human note_id missing from payload")
+	}
+
+	// Grab the human note's row id and resolve it.
+	notes := b.NotesForFile("acme/web", 42, "src/main.go")
+	var humanID int64
+	for _, n := range notes {
+		if n.Source == "human" {
+			humanID = n.ID
+		}
+	}
+	if err := b.ResolveNote(humanID); err != nil {
+		t.Fatal(err)
+	}
+	ev := b.RecentEvents(EventFilter{KindPrefix: "note.resolve", Limit: 1})
+	if len(ev) != 1 {
+		t.Fatalf("resolve: got %d events", len(ev))
+	}
+	if p := eventPayload(t, ev[0].Payload); int64(p["note_id"].(float64)) != humanID {
+		t.Errorf("resolve payload: got %v, want note_id=%d", p, humanID)
+	}
+
+	// Resolving again is a no-op (no new event).
+	before := len(b.RecentEvents(EventFilter{KindPrefix: "note.resolve"}))
+	if err := b.ResolveNote(humanID); err != nil {
+		t.Fatal(err)
+	}
+	after := len(b.RecentEvents(EventFilter{KindPrefix: "note.resolve"}))
+	if after != before {
+		t.Errorf("repeat resolve emitted event: before=%d after=%d", before, after)
+	}
+
+	// Delete carries the body forward so replay can resurrect the note.
+	if err := b.DeleteNote(humanID); err != nil {
+		t.Fatal(err)
+	}
+	ev = b.RecentEvents(EventFilter{KindPrefix: "note.delete", Limit: 1})
+	if len(ev) != 1 {
+		t.Fatalf("delete: got %d events", len(ev))
+	}
+	p := eventPayload(t, ev[0].Payload)
+	if p["body"] != "hello" || p["source"] != "human" || p["line_hash"] != "hash1" {
+		t.Errorf("delete payload missing content: %v", p)
+	}
+	if _, ok := p["resolved_at"]; !ok {
+		t.Error("deleted note was resolved; expected resolved_at in payload")
+	}
+
+	// Deleting a missing id is a no-op (no event).
+	before = len(b.RecentEvents(EventFilter{KindPrefix: "note.delete"}))
+	if err := b.DeleteNote(99999); err != nil {
+		t.Fatal(err)
+	}
+	after = len(b.RecentEvents(EventFilter{KindPrefix: "note.delete"}))
+	if after != before {
+		t.Errorf("delete of missing id emitted event: before=%d after=%d", before, after)
+	}
+}
+
+func TestBrainEventsFileReviewsAndScrutiny(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("RHODIUM_BRAIN", filepath.Join(dir, "brain.db"))
+	b, err := LoadBrain()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+
+	if err := b.SetFileReviewed("acme/web", 42, "src/main.go", "abc", "base"); err != nil {
+		t.Fatal(err)
+	}
+	ev := b.RecentEvents(EventFilter{KindPrefix: "file.reviewed", Limit: 1})
+	if len(ev) != 1 {
+		t.Fatalf("file.reviewed: got %d events", len(ev))
+	}
+	if ev[0].PRKey != "acme/web#42" || ev[0].Path != "src/main.go" {
+		t.Errorf("file.reviewed scope: got pr=%q path=%q", ev[0].PRKey, ev[0].Path)
+	}
+	p := eventPayload(t, ev[0].Payload)
+	if p["head_sha"] != "abc" || p["base_sha"] != "base" {
+		t.Errorf("file.reviewed payload: %v", p)
+	}
+
+	if err := b.SetScrutiny("acme/web", 42, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.SetScrutiny("acme/web", 42, false); err != nil {
+		t.Fatal(err)
+	}
+	evs := b.RecentEvents(EventFilter{PRKey: "acme/web#42", KindPrefix: "scrutiny.set"})
+	if len(evs) != 2 {
+		t.Fatalf("scrutiny.set: got %d events, want 2", len(evs))
+	}
+	// Newest first.
+	if p := eventPayload(t, evs[0].Payload); p["on"] != false {
+		t.Errorf("latest scrutiny: got %v, want on=false", p)
+	}
+	if p := eventPayload(t, evs[1].Payload); p["on"] != true {
+		t.Errorf("earlier scrutiny: got %v, want on=true", p)
+	}
+}
+
+func TestBrainEventsSessions(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("RHODIUM_BRAIN", filepath.Join(dir, "brain.db"))
+	b, err := LoadBrain()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+
+	files := []SessionFile{{Path: "a.go", Class: "x"}, {Path: "b.go", Class: "y"}}
+	s, err := b.CreateSession("acme/web", 42, "h1", "b1", "h1", "b1", files)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ev := b.RecentEvents(EventFilter{KindPrefix: "session.create", Limit: 1})
+	if len(ev) != 1 {
+		t.Fatalf("session.create: got %d events", len(ev))
+	}
+	p := eventPayload(t, ev[0].Payload)
+	if int64(p["session_id"].(float64)) != s.ID {
+		t.Errorf("session.create id: got %v, want %d", p["session_id"], s.ID)
+	}
+	if fs, ok := p["files"].([]any); !ok || len(fs) != 2 {
+		t.Errorf("session.create files: %v", p["files"])
+	}
+
+	// Finish file a.go → one session.file.done event, no complete yet.
+	if err := b.SetSessionFileDone(s.ID, "a.go", true); err != nil {
+		t.Fatal(err)
+	}
+	dones := b.RecentEvents(EventFilter{KindPrefix: "session.file.done"})
+	if len(dones) != 1 {
+		t.Fatalf("after 1 done: got %d events", len(dones))
+	}
+	if completes := b.RecentEvents(EventFilter{KindPrefix: "session.complete"}); len(completes) != 0 {
+		t.Errorf("premature complete: got %d events", len(completes))
+	}
+
+	// Finish last file → file.done + auto session.complete (both in the same tx).
+	if err := b.SetSessionFileDone(s.ID, "b.go", true); err != nil {
+		t.Fatal(err)
+	}
+	completes := b.RecentEvents(EventFilter{KindPrefix: "session.complete", Limit: 1})
+	if len(completes) != 1 {
+		t.Fatalf("auto-complete: got %d events, want 1", len(completes))
+	}
+	if p := eventPayload(t, completes[0].Payload); p["reason"] != "auto" {
+		t.Errorf("auto-complete reason: got %v, want auto", p["reason"])
+	}
+
+	// Manual complete on an already-complete session emits no new event.
+	before := len(b.RecentEvents(EventFilter{KindPrefix: "session.complete"}))
+	if err := b.CompleteSession(s.ID); err != nil {
+		t.Fatal(err)
+	}
+	after := len(b.RecentEvents(EventFilter{KindPrefix: "session.complete"}))
+	if after != before {
+		t.Errorf("CompleteSession on complete session emitted event: before=%d after=%d", before, after)
+	}
+
+	// Creating a new session while one is still live logs session.complete
+	// for the superseded one plus session.create for the new one.
+	s2, _ := b.CreateSession("acme/web", 42, "h2", "b2", "h2", "b2", files)
+	if _, err := b.CreateSession("acme/web", 42, "h3", "b3", "h3", "b3", files); err != nil {
+		t.Fatal(err)
+	}
+	recent := b.RecentEvents(EventFilter{KindPrefix: "session.complete", Limit: 1})
+	if len(recent) != 1 {
+		t.Fatalf("supersede: got %d events", len(recent))
+	}
+	p = eventPayload(t, recent[0].Payload)
+	if p["reason"] != "superseded" || int64(p["session_id"].(float64)) != s2.ID {
+		t.Errorf("supersede payload: %v, want superseded for id=%d", p, s2.ID)
+	}
+}
+
+func TestBrainEventsFilter(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("RHODIUM_BRAIN", filepath.Join(dir, "brain.db"))
+	b, err := LoadBrain()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+
+	b.SetScrutiny("acme/web", 1, true)
+	b.SetScrutiny("acme/web", 2, true)
+	b.SetFileReviewed("acme/web", 1, "a.go", "h", "b")
+
+	// Limit honored.
+	if evs := b.RecentEvents(EventFilter{Limit: 2}); len(evs) != 2 {
+		t.Errorf("limit=2: got %d", len(evs))
+	}
+
+	// PRKey narrows to one PR's events.
+	pr1 := b.RecentEvents(EventFilter{PRKey: "acme/web#1"})
+	if len(pr1) != 2 {
+		t.Fatalf("pr1: got %d events, want 2", len(pr1))
+	}
+	for _, e := range pr1 {
+		if e.PRKey != "acme/web#1" {
+			t.Errorf("pr1 leaked event: %+v", e)
+		}
+	}
+
+	// KindPrefix narrows by kind family.
+	scrutiny := b.RecentEvents(EventFilter{KindPrefix: "scrutiny."})
+	if len(scrutiny) != 2 {
+		t.Fatalf("scrutiny prefix: got %d", len(scrutiny))
+	}
+	for _, e := range scrutiny {
+		if e.Kind != "scrutiny.set" {
+			t.Errorf("scrutiny prefix leaked event: %q", e.Kind)
+		}
+	}
+
+	// Reverse-chronological order.
+	all := b.RecentEvents(EventFilter{})
+	for i := 1; i < len(all); i++ {
+		if all[i-1].ID < all[i].ID {
+			t.Errorf("not reverse-chronological: ids %d then %d", all[i-1].ID, all[i].ID)
+		}
 	}
 }
