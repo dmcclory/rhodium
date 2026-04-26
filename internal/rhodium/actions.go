@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"rhodium/internal/gh"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -62,7 +63,7 @@ func runAction(a *app, action Action) (tea.Cmd, error) {
 // session is resumed. We invoke the agent as
 // `<cmd> <interactive_args...> "$(cat <file>)"` so the prompt arrives as
 // one argv slot — bare for claude, behind `--prompt` for opencode.
-func runInteractiveAction(a *app, action Action, agent Agent, worktree string, pr PR, prompt string) (tea.Cmd, error) {
+func runInteractiveAction(a *app, action Action, agent Agent, worktree string, pr gh.PR, prompt string) (tea.Cmd, error) {
 	promptPath, err := writePromptFile(pr, action.Name, prompt)
 	if err != nil {
 		return nil, err
@@ -106,7 +107,7 @@ func runInteractiveAction(a *app, action Action, agent Agent, worktree string, p
 // stdin, parses its stdout as a JSON array of review notes, and writes each
 // to the brain under source="agent". Stays inside the TUI — no tmux, no
 // worktree required.
-func runInlineNotesAction(a *app, action Action, agent Agent, pr PR, prompt string) tea.Cmd {
+func runInlineNotesAction(a *app, action Action, agent Agent, pr gh.PR, prompt string) tea.Cmd {
 	a.statusMsg = fmt.Sprintf("running %s (%s)…", agent.Name, action.Name)
 	return func() tea.Msg {
 		cmd := exec.Command(agent.Command, agent.OneshotArgs...)
@@ -136,7 +137,7 @@ func runInlineNotesAction(a *app, action Action, agent Agent, pr PR, prompt stri
 // writePromptFile persists the rendered prompt to $TMPDIR so the tmux child
 // shell can read it via `$(cat …)`. Path is deterministic per (PR, action)
 // so repeated presses overwrite instead of piling up.
-func writePromptFile(pr PR, actionName, prompt string) (string, error) {
+func writePromptFile(pr gh.PR, actionName, prompt string) (string, error) {
 	safeKey := strings.ReplaceAll(prKey(pr.Repo, pr.Number), "/", "-")
 	name := fmt.Sprintf("rhodium-%s-%s.md", safeKey, actionName)
 	path := filepath.Join(os.TempDir(), name)
@@ -149,7 +150,7 @@ func writePromptFile(pr PR, actionName, prompt string) (string, error) {
 // stashAgentOutput writes raw agent output to ~/.cache/rhodium for
 // post-mortem when the oneshot path fails to parse. Best-effort — ignores
 // errors since this is itself an error path.
-func stashAgentOutput(pr PR, actionName string, stdout, stderr []byte) {
+func stashAgentOutput(pr gh.PR, actionName string, stdout, stderr []byte) {
 	dir := cacheDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return

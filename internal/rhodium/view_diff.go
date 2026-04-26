@@ -2,6 +2,7 @@ package rhodium
 
 import (
 	"fmt"
+	"rhodium/internal/gh"
 	"strings"
 	"unicode"
 
@@ -20,7 +21,7 @@ type diffView struct {
 	hunks      []Hunk
 	marks      map[string]bool
 	notes      []Note
-	ghInline   []GHComment // GitHub inline comments scoped to the current file
+	ghInline   []gh.Comment // GitHub inline comments scoped to the current file
 	hunkLines  []int
 	lineMap    []int // output line → new-file line number (0 = non-file line)
 	hunkIdx    int
@@ -154,7 +155,7 @@ func (v *diffView) Update(a *app, msg tea.Msg) tea.Cmd {
 // full file. If the PR head has moved since this file was last reviewed,
 // we enter catch-up mode: fetch only the delta and show that instead of
 // the full PR diff.
-func (v *diffView) open(a *app, fc FileChange) tea.Cmd {
+func (v *diffView) open(a *app, fc gh.FileChange) tea.Cmd {
 	a.selectedFile = fc.Path
 	a.activeView = viewDiff
 	v.blob = ""
@@ -195,10 +196,10 @@ func (v *diffView) open(a *app, fc FileChange) tea.Cmd {
 		if rebased {
 			a.statusMsg = fmt.Sprintf("classifying diamond (rebase %s→%s)", shortSHA(oldBase), shortSHA(newBase))
 			cmds = append(cmds, func() tea.Msg {
-				b1, _ := fetchFileAtRef(repo, path, oldBase)
-				f1, _ := fetchFileAtRef(repo, path, oldHead)
-				b2, _ := fetchFileAtRef(repo, path, newBase)
-				f2, _ := fetchFileAtRef(repo, path, newHead)
+				b1, _ := gh.FetchFileAtRef(repo, path, oldBase)
+				f1, _ := gh.FetchFileAtRef(repo, path, oldHead)
+				b2, _ := gh.FetchFileAtRef(repo, path, newBase)
+				f2, _ := gh.FetchFileAtRef(repo, path, newHead)
 				d := Diamond{B1: b1, F1: f1, B2: b2, F2: f2}
 				class := Classify(d, nil)
 				result := ComputeSlow(d)
@@ -209,7 +210,7 @@ func (v *diffView) open(a *app, fc FileChange) tea.Cmd {
 				// segmentHunks instead, so no patch is needed.
 				var patch string
 				if class.ShownAsDiff2() {
-					files, _ := fetchCompare(repo, oldHead, newHead)
+					files, _ := gh.FetchCompare(repo, oldHead, newHead)
 					for _, f := range files {
 						if f.Path == path {
 							patch = f.Patch
@@ -222,7 +223,7 @@ func (v *diffView) open(a *app, fc FileChange) tea.Cmd {
 		} else {
 			a.statusMsg = fmt.Sprintf("loading catch-up diff %s..%s", shortSHA(oldHead), shortSHA(newHead))
 			cmds = append(cmds, func() tea.Msg {
-				files, err := fetchCompare(repo, oldHead, newHead)
+				files, err := gh.FetchCompare(repo, oldHead, newHead)
 				return catchUpLoadedMsg{path: path, files: files, err: err}
 			})
 		}
@@ -232,7 +233,7 @@ func (v *diffView) open(a *app, fc FileChange) tea.Cmd {
 		repo := a.selectedPR.Repo
 		sha := fc.Blob
 		cmds = append(cmds, func() tea.Msg {
-			content, err := fetchBlob(repo, sha)
+			content, err := gh.FetchBlob(repo, sha)
 			return blobLoadedMsg{content: content, err: err}
 		})
 	}
@@ -253,7 +254,7 @@ func (v *diffView) onCatchUpLoaded(a *app, msg catchUpLoadedMsg) tea.Cmd {
 	if a.activeView != viewDiff || a.selectedFile != msg.path {
 		return nil
 	}
-	var deltaFC *FileChange
+	var deltaFC *gh.FileChange
 	for _, f := range msg.files {
 		if f.Path == msg.path {
 			deltaFC = &f
@@ -338,12 +339,12 @@ func (v *diffView) onDiamondClassified(a *app, msg diamondClassifiedMsg) tea.Cmd
 // ghInlineForFile filters the cached PR comments down to inline ones on
 // the given path. Empty result is fine — comments may not have loaded yet,
 // or the file simply has none.
-func ghInlineForFile(a *app, path string) []GHComment {
+func ghInlineForFile(a *app, path string) []gh.Comment {
 	if a.selectedPR == nil {
 		return nil
 	}
 	all := a.prComments[prKey(a.selectedPR.Repo, a.selectedPR.Number)]
-	var out []GHComment
+	var out []gh.Comment
 	for _, c := range all {
 		if c.Type == "inline" && c.Path == path {
 			out = append(out, c)
@@ -1126,7 +1127,7 @@ func (v *diffView) publishNoteAtCursor(a *app) tea.Cmd {
 	commit := pr.HeadSHA
 	a.statusMsg = fmt.Sprintf("publishing note on %s:%d…", path, lineNo)
 	return func() tea.Msg {
-		ghID, err := postInlineComment(pr.Repo, pr.Number, InlineComment{
+		ghID, err := gh.PostInlineComment(pr.Repo, pr.Number, gh.InlineComment{
 			Body:     body,
 			Path:     path,
 			CommitID: commit,

@@ -3,6 +3,7 @@ package rhodium
 import (
 	"bytes"
 	"fmt"
+	"rhodium/internal/gh"
 	"strings"
 	"text/template"
 )
@@ -24,7 +25,7 @@ type PromptCtx struct {
 
 // buildPromptCtx assembles a PromptCtx from a PR + its file list. Worktree is
 // passed in because non-worktree actions resolve it as "" and some do.
-func buildPromptCtx(pr PR, files []FileChange, worktree string) PromptCtx {
+func buildPromptCtx(pr gh.PR, files []gh.FileChange, worktree string) PromptCtx {
 	return PromptCtx{
 		Repo:     pr.Repo,
 		Number:   pr.Number,
@@ -39,7 +40,7 @@ func buildPromptCtx(pr PR, files []FileChange, worktree string) PromptCtx {
 	}
 }
 
-func renderFileList(files []FileChange) string {
+func renderFileList(files []gh.FileChange) string {
 	var b strings.Builder
 	for _, f := range files {
 		fmt.Fprintf(&b, "%s  +%d -%d\n", f.Path, f.Additions, f.Deletions)
@@ -50,7 +51,7 @@ func renderFileList(files []FileChange) string {
 // renderPatches concatenates per-file unified diffs with a header line so the
 // agent can tell where one file ends and the next begins. Files with empty
 // patches (binary, too-large) are listed but marked as such.
-func renderPatches(files []FileChange) string {
+func renderPatches(files []gh.FileChange) string {
 	var b strings.Builder
 	for _, f := range files {
 		fmt.Fprintf(&b, "diff --- %s  (+%d -%d)\n", f.Path, f.Additions, f.Deletions)

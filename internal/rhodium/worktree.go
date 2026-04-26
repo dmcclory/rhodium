@@ -12,10 +12,10 @@ import (
 // if it doesn't exist. Convention: <worktree_root>/<owner>-<repo>/pr-<N>.
 //
 // On first use for a PR, we:
-//   1. Ensure the source repo exists at the configured local path.
-//   2. `git worktree add` with a placeholder branch in the source repo.
-//   3. Inside the new worktree, `gh pr checkout <N>` to land the PR branch
-//      (handles fork PRs cleanly).
+//  1. Ensure the source repo exists at the configured local path.
+//  2. `git worktree add` with a placeholder branch in the source repo.
+//  3. Inside the new worktree, `gh pr checkout <N>` to land the PR branch
+//     (handles fork PRs cleanly).
 //
 // If the target path already exists and is a registered worktree, it's
 // returned unchanged. If the path exists but is NOT a worktree, we refuse

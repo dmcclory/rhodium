@@ -11,12 +11,12 @@ import (
 // data-oriented: adding a feature should mean appending a Binding, not
 // threading a new switch case through multiple files.
 type Binding struct {
-	Name       string              // stable id; future config can rebind by name
-	Keys       []string            // all keys that trigger this binding (aliases)
-	Desc       string              // shown in help overlay
-	Group      string              // "Navigate" | "Mark" | "Notes" | "View" | "Agent" | "Global"
-	Action     func(*app) tea.Cmd  // invoked on match
-	Unfiltered bool                // if true, still fires while a bubbles list is in filter mode
+	Name       string             // stable id; future config can rebind by name
+	Keys       []string           // all keys that trigger this binding (aliases)
+	Desc       string             // shown in help overlay
+	Group      string             // "Navigate" | "Mark" | "Notes" | "View" | "Agent" | "Global"
+	Action     func(*app) tea.Cmd // invoked on match
+	Unfiltered bool               // if true, still fires while a bubbles list is in filter mode
 }
 
 // Group names — also the rendering order in the help overlay.

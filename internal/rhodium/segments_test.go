@@ -41,16 +41,18 @@ func TestComputeSegmentsPureInsertion(t *testing.T) {
 // the rebase.
 //
 // Layout:
-//   b1: "x"
-//   b2: "x, y"               (base added y)
-//   f1: "x, z"               (feature added z on old arm)
-//   f2: "x, y, z"            (rebased: y from new base + z from feature)
+//
+//	b1: "x"
+//	b2: "x, y"               (base added y)
+//	f1: "x, z"               (feature added z on old arm)
+//	f2: "x, y, z"            (rebased: y from new base + z from feature)
 //
 // Super-anchor: "x" (only line present in all 4 corners).
 // Two inter-anchor regions:
-//   Leading: empty on all corners (skipped).
-//   Trailing: b1="", f1="z", b2="y", f2="y\nz"
-//     → Classify: all four segments distinct → ClassConflict at segment level.
+//
+//	Leading: empty on all corners (skipped).
+//	Trailing: b1="", f1="z", b2="y", f2="y\nz"
+//	  → Classify: all four segments distinct → ClassConflict at segment level.
 //
 // This test documents current behavior — NOT a claim that ClassConflict is
 // the "right" classification here. Iron's full algorithm further resolves

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"rhodium/internal/gh"
 	"strconv"
 	"strings"
 
@@ -952,15 +953,15 @@ func (b *Brain) SetHunkMarks(repo string, pr int, path string, marks map[string]
 	return tx.Commit()
 }
 
-func (b *Brain) CachedPRs() []PR {
+func (b *Brain) CachedPRs() []gh.PR {
 	rows, err := b.db.Query(`SELECT repo, number, title, author, head_sha, base_sha, body FROM pr_cache`)
 	if err != nil {
 		return nil
 	}
 	defer rows.Close()
-	var out []PR
+	var out []gh.PR
 	for rows.Next() {
-		var p PR
+		var p gh.PR
 		if rows.Scan(&p.Repo, &p.Number, &p.Title, &p.Author, &p.HeadSHA, &p.BaseSHA, &p.Body) == nil {
 			out = append(out, p)
 		}
@@ -968,7 +969,7 @@ func (b *Brain) CachedPRs() []PR {
 	return out
 }
 
-func (b *Brain) SetPRCache(prs []PR) error {
+func (b *Brain) SetPRCache(prs []gh.PR) error {
 	tx, err := b.db.Begin()
 	if err != nil {
 		return err
@@ -1217,8 +1218,8 @@ func (b *Brain) DeleteNote(id int64) error {
 	defer tx.Rollback()
 	var (
 		key, path, body, source, lineHash string
-		lineNo                             int
-		resolved                           sql.NullString
+		lineNo                            int
+		resolved                          sql.NullString
 	)
 	switch err = tx.QueryRow(
 		`SELECT pr_key, path, line_no, line_hash, body, source, resolved_at FROM notes WHERE id = ?`, id,
@@ -1248,7 +1249,7 @@ func (b *Brain) DeleteNote(id int64) error {
 	return tx.Commit()
 }
 
-func (b *Brain) Status(repo string, pr int, fc FileChange) FileStatus {
+func (b *Brain) Status(repo string, pr int, fc gh.FileChange) FileStatus {
 	hunks := parseHunks(fc.Patch)
 	if len(hunks) == 0 {
 		return StatusSeen
@@ -1327,7 +1328,7 @@ func (b *Brain) AllFileReviewedStates(repo string, pr int) map[string]FileReview
 	return out
 }
 
-func (b *Brain) UnseenCount(repo string, pr int, files []FileChange) int {
+func (b *Brain) UnseenCount(repo string, pr int, files []gh.FileChange) int {
 	n := 0
 	for _, f := range files {
 		if b.Status(repo, pr, f) != StatusSeen {

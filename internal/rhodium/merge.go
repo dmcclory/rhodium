@@ -2,6 +2,7 @@ package rhodium
 
 import (
 	"fmt"
+	"rhodium/internal/gh"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
@@ -14,9 +15,9 @@ import (
 // with the same `M` key.
 type mergeModal struct {
 	open     bool
-	method   MergeMethod
+	method   gh.MergeMethod
 	body     textarea.Model
-	pr       *PR
+	pr       *gh.PR
 	inflight bool
 }
 
@@ -25,7 +26,7 @@ func newMergeModal() mergeModal {
 	ti.Placeholder = "Commit message (optional — GitHub fills from PR body for squash)"
 	ti.SetHeight(4)
 	ti.ShowLineNumbers = false
-	return mergeModal{method: MergeSquash, body: ti}
+	return mergeModal{method: gh.MergeSquash, body: ti}
 }
 
 var mergeBoxStyle = lipgloss.NewStyle().
@@ -34,9 +35,9 @@ var mergeBoxStyle = lipgloss.NewStyle().
 	Padding(1, 2)
 
 // openMerge captures pr and initializes method from the config default.
-func (a *app) openMerge(pr PR) tea.Cmd {
+func (a *app) openMerge(pr gh.PR) tea.Cmd {
 	a.merge.pr = &pr
-	a.merge.method = MergeMethod(a.cfg.MergeMethodResolved())
+	a.merge.method = gh.MergeMethod(a.cfg.MergeMethodResolved())
 	a.merge.body.Reset()
 	a.merge.open = true
 	return a.merge.body.Focus()
@@ -65,12 +66,12 @@ func (a *app) updateMergeKeys(msg tea.KeyMsg) tea.Cmd {
 		return nil
 	case "tab":
 		switch a.merge.method {
-		case MergeSquash:
-			a.merge.method = MergeMerge
-		case MergeMerge:
-			a.merge.method = MergeRebase
+		case gh.MergeSquash:
+			a.merge.method = gh.MergeMerge
+		case gh.MergeMerge:
+			a.merge.method = gh.MergeRebase
 		default:
-			a.merge.method = MergeSquash
+			a.merge.method = gh.MergeSquash
 		}
 		return nil
 	case "ctrl+s":
@@ -93,7 +94,7 @@ func (a *app) submitMergeFromModal() tea.Cmd {
 	a.merge.open = false
 	a.merge.body.Blur()
 	return func() tea.Msg {
-		err := mergePR(pr.Repo, pr.Number, method, message)
+		err := gh.MergePR(pr.Repo, pr.Number, method, message)
 		return mergeSubmittedMsg{repo: pr.Repo, prNum: pr.Number, method: method, err: err}
 	}
 }

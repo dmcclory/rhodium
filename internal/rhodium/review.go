@@ -2,6 +2,7 @@ package rhodium
 
 import (
 	"fmt"
+	"rhodium/internal/gh"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -18,9 +19,9 @@ import (
 // either the Todo dashboard or the All-PRs list with the same `A` key.
 type reviewModal struct {
 	open     bool
-	event    ReviewEvent
+	event    gh.ReviewEvent
 	body     textarea.Model
-	pr       *PR // captured at open time so re-selects don't shift target
+	pr       *gh.PR // captured at open time so re-selects don't shift target
 	inflight bool
 }
 
@@ -29,7 +30,7 @@ func newReviewModal() reviewModal {
 	ti.Placeholder = "Review summary (optional for APPROVE, required otherwise)"
 	ti.SetHeight(4)
 	ti.ShowLineNumbers = false
-	return reviewModal{event: ReviewApprove, body: ti}
+	return reviewModal{event: gh.ReviewApprove, body: ti}
 }
 
 var reviewBoxStyle = lipgloss.NewStyle().
@@ -39,9 +40,9 @@ var reviewBoxStyle = lipgloss.NewStyle().
 
 // openReview captures pr and focuses the body textarea. Callers in any view
 // invoke this to bring up the modal.
-func (a *app) openReview(pr PR) tea.Cmd {
+func (a *app) openReview(pr gh.PR) tea.Cmd {
 	a.review.pr = &pr
-	a.review.event = ReviewApprove
+	a.review.event = gh.ReviewApprove
 	a.review.body.Reset()
 	a.review.open = true
 	return a.review.body.Focus()
@@ -75,12 +76,12 @@ func (a *app) updateReviewKeys(msg tea.KeyMsg) tea.Cmd {
 	case "tab":
 		// Cycle APPROVE → REQUEST_CHANGES → COMMENT → APPROVE.
 		switch a.review.event {
-		case ReviewApprove:
-			a.review.event = ReviewRequestChanges
-		case ReviewRequestChanges:
-			a.review.event = ReviewComment
+		case gh.ReviewApprove:
+			a.review.event = gh.ReviewRequestChanges
+		case gh.ReviewRequestChanges:
+			a.review.event = gh.ReviewComment
 		default:
-			a.review.event = ReviewApprove
+			a.review.event = gh.ReviewApprove
 		}
 		return nil
 	case "ctrl+s":
@@ -91,7 +92,7 @@ func (a *app) updateReviewKeys(msg tea.KeyMsg) tea.Cmd {
 	return cmd
 }
 
-// submitReviewFromModal validates and fires submitReview asynchronously.
+// submitReviewFromModal validates and fires gh.SubmitReview asynchronously.
 // GitHub rejects an empty body with REQUEST_CHANGES or COMMENT, so we
 // guard that locally rather than letting the round-trip error back.
 func (a *app) submitReviewFromModal() tea.Cmd {
@@ -100,7 +101,7 @@ func (a *app) submitReviewFromModal() tea.Cmd {
 		return nil
 	}
 	body := strings.TrimSpace(a.review.body.Value())
-	if body == "" && a.review.event != ReviewApprove {
+	if body == "" && a.review.event != gh.ReviewApprove {
 		a.statusMsg = fmt.Sprintf("review: %s requires a body", a.review.event)
 		return nil
 	}
@@ -113,7 +114,7 @@ func (a *app) submitReviewFromModal() tea.Cmd {
 	a.review.body.Blur()
 	a.review.inflight = false
 	return func() tea.Msg {
-		err := submitReview(pr.Repo, pr.Number, event, body)
+		err := gh.SubmitReview(pr.Repo, pr.Number, event, body)
 		return reviewSubmittedMsg{repo: pr.Repo, prNum: pr.Number, event: event, err: err}
 	}
 }

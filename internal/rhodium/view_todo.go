@@ -2,6 +2,7 @@ package rhodium
 
 import (
 	"fmt"
+	"rhodium/internal/gh"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -202,7 +203,7 @@ func (v *todoView) filtering() bool { return v.list.FilterState() == list.Filter
 // todoItem is a compact row in the todo dashboard view. Only PRs with
 // outstanding work (in-progress, catch-up, unseen, notes) become todoItems.
 type todoItem struct {
-	pr        PR
+	pr        gh.PR
 	tags      []string // in stable order: in-progress, catch-up, unseen, notes
 	done      int      // catch-up progress — ignored when catch-up absent
 	total     int
@@ -260,7 +261,7 @@ func computeTodoCols(items []todoItem) prCols {
 }
 
 // buildTodoItem returns a todoItem for pr if it needs attention, or nil otherwise.
-func buildTodoItem(a *app, pr PR) *todoItem {
+func buildTodoItem(a *app, pr gh.PR) *todoItem {
 	if !a.prHasOutstandingWork(pr) {
 		return nil
 	}

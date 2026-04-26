@@ -2,6 +2,7 @@ package rhodium
 
 import (
 	"fmt"
+	"rhodium/internal/gh"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -50,7 +51,7 @@ func newMentionPicker() mentionPicker {
 
 // filterContributors returns items whose login contains query as a
 // case-insensitive substring. An empty query matches everything.
-func filterContributors(contribs []Contributor, query string) []list.Item {
+func filterContributors(contribs []gh.Contributor, query string) []list.Item {
 	q := strings.ToLower(query)
 	items := make([]list.Item, 0, len(contribs))
 	for _, c := range contribs {
@@ -79,7 +80,7 @@ func (m *mentionPicker) Render() string {
 // as contributorsLoadedMsg and are stashed on app.contributors.
 func loadContributorsCmd(repo string) tea.Cmd {
 	return func() tea.Msg {
-		c, err := listContributors(repo)
+		c, err := gh.ListContributors(repo)
 		return contributorsLoadedMsg{repo: repo, contributors: c, err: err}
 	}
 }

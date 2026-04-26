@@ -3,6 +3,7 @@ package rhodium
 import (
 	"fmt"
 	"reflect"
+	"rhodium/internal/gh"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -50,12 +51,12 @@ type app struct {
 	merge  mergeModal
 
 	// Shared PR data. prFiles is keyed by "<repo>#<num>".
-	allPRs          []PR
+	allPRs          []gh.PR
 	freshKeys       map[string]bool // keys confirmed still open by a repo listing
-	prFiles         map[string][]FileChange
+	prFiles         map[string][]gh.FileChange
 	pinnedAttention map[string]bool // pr keys pinned in todo's "needs attention"
 
-	selectedPR     *PR
+	selectedPR     *gh.PR
 	selectedFile   string
 	listViewOrigin view // whichever of viewTodo/viewPRs the user drilled from
 
@@ -64,12 +65,12 @@ type app struct {
 	// contributors caches the per-repo contributor list fetched on first
 	// use of the @-mention picker. Lifetime is the app session; a restart
 	// re-fetches. Map key is "owner/repo".
-	contributors map[string][]Contributor
+	contributors map[string][]gh.Contributor
 
 	// prComments caches the three GH comment streams per PR. Populated on
 	// openPR; the diff view reads it for inline rendering and the comments
 	// view reads it for the full list.
-	prComments map[string][]GHComment
+	prComments map[string][]gh.Comment
 
 	statusMsg string
 
@@ -91,11 +92,11 @@ func newApp(cfg *Config, brain *Brain) *app {
 		comments:        newCommentsView(),
 		review:          newReviewModal(),
 		merge:           newMergeModal(),
-		prFiles:         map[string][]FileChange{},
+		prFiles:         map[string][]gh.FileChange{},
 		freshKeys:       map[string]bool{},
 		pinnedAttention: map[string]bool{},
-		contributors:    map[string][]Contributor{},
-		prComments:      map[string][]GHComment{},
+		contributors:    map[string][]gh.Contributor{},
+		prComments:      map[string][]gh.Comment{},
 	}
 
 	cached := brain.CachedPRs()
@@ -276,7 +277,7 @@ func (a *app) relayout() {
 // openPR transitions todo/prs → files, loading the file list if it isn't
 // already cached. Bumps pollGen so any in-flight tick from a previous PR
 // stops silently.
-func (a *app) openPR(pr PR) tea.Cmd {
+func (a *app) openPR(pr gh.PR) tea.Cmd {
 	a.listViewOrigin = a.activeView
 	a.selectedPR = &pr
 	a.reviewSession = a.brain.ActiveSession(pr.Repo, pr.Number)
@@ -302,7 +303,7 @@ func (a *app) openPR(pr PR) tea.Cmd {
 
 // openFile transitions files → diff, delegating to diffView.open for the
 // actual state reset + fetch commands.
-func (a *app) openFile(fc FileChange) tea.Cmd {
+func (a *app) openFile(fc gh.FileChange) tea.Cmd {
 	return a.diff.open(a, fc)
 }
 
@@ -320,25 +321,25 @@ func (a *app) openComments(returnTo view) tea.Cmd {
 	return nil
 }
 
-// currentFile returns the FileChange for a.selectedFile from the PR's
+// currentFile returns the gh.FileChange for a.selectedFile from the PR's
 // cached file list, if present.
-func (a *app) currentFile() (FileChange, bool) {
+func (a *app) currentFile() (gh.FileChange, bool) {
 	if a.selectedPR == nil {
-		return FileChange{}, false
+		return gh.FileChange{}, false
 	}
 	for _, f := range a.prFiles[prKey(a.selectedPR.Repo, a.selectedPR.Number)] {
 		if f.Path == a.selectedFile {
 			return f, true
 		}
 	}
-	return FileChange{}, false
+	return gh.FileChange{}, false
 }
 
 // prHasOutstandingWork reports whether pr still needs the reviewer's
 // attention: unseen, in-progress, catch-up pending, or notes attached.
 // Single source of truth for "is this PR on the todo list" — used by
 // the todo count and buildTodoItem's nil check.
-func (a *app) prHasOutstandingWork(pr PR) bool {
+func (a *app) prHasOutstandingWork(pr gh.PR) bool {
 	if a.brain.NoteCountForPR(pr.Repo, pr.Number) > 0 {
 		return true
 	}
@@ -459,7 +460,7 @@ func (a *app) onAutoAdvance(msg autoAdvanceMsg) tea.Cmd {
 
 func (a *app) onPrefetchDone() tea.Cmd {
 	if len(a.freshKeys) > 0 {
-		var live []PR
+		var live []gh.PR
 		for _, p := range a.allPRs {
 			if a.freshKeys[prKey(p.Repo, p.Number)] {
 				live = append(live, p)
@@ -552,7 +553,7 @@ func (a *app) onNotePublished(msg notePublishedMsg) tea.Cmd {
 	return nil
 }
 
-// onReviewSubmitted lands after submitReview returns. The PR list doesn't
+// onReviewSubmitted lands after gh.SubmitReview returns. The PR list doesn't
 // re-fetch state — GitHub's approval status isn't rendered in the TUI
 // today — but the status line confirms what shipped.
 func (a *app) onReviewSubmitted(msg reviewSubmittedMsg) tea.Cmd {
@@ -564,7 +565,7 @@ func (a *app) onReviewSubmitted(msg reviewSubmittedMsg) tea.Cmd {
 	return nil
 }
 
-// onMergeSubmitted lands after mergePR returns. On success we drop the PR
+// onMergeSubmitted lands after gh.MergePR returns. On success we drop the PR
 // from allPRs locally so it disappears from the lists without a full
 // refetch — the next background refresh would catch it anyway, but that's
 // not instant enough for the "M ctrl+s" feedback loop.
@@ -619,7 +620,7 @@ func (a *app) onContributorsLoaded(msg contributorsLoadedMsg) tea.Cmd {
 		return nil
 	}
 	if a.contributors == nil {
-		a.contributors = map[string][]Contributor{}
+		a.contributors = map[string][]gh.Contributor{}
 	}
 	a.contributors[msg.repo] = msg.contributors
 	if a.activeView == viewDiff {

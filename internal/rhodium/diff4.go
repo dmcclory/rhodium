@@ -68,24 +68,24 @@ type Class int
 
 const (
 	// Hidden classes — nothing to show the reviewer.
-	ClassB1B2F1F2 Class = iota // all equal
-	ClassB1B2__F1F2            // bases equal, features equal (clean merge)
-	ClassB1F1__B2F2            // old pair equal, new pair equal (clean merge)
-	ClassB2F1F2                // FORGET: base absorbed feature changes
+	ClassB1B2F1F2   Class = iota // all equal
+	ClassB1B2__F1F2              // bases equal, features equal (clean merge)
+	ClassB1F1__B2F2              // old pair equal, new pair equal (clean merge)
+	ClassB2F1F2                  // FORGET: base absorbed feature changes
 
 	// Shown-as-diff2 classes — display as a simple 2-way diff.
-	ClassB1B2F1    // b1=b2=f1; only f2 is new → show b2→f2
-	ClassB1B2F2    // b1=b2=f2; f1 is the outlier → show b1→f1
-	ClassB1B2      // bases equal, features differ → show f1→f2 (most common: new commits, no rebase)
-	ClassB1F1F2    // b1=f1=f2; only b2 changed → show b1→b2
-	ClassB2F1      // b2=f1 → show b2→f2
+	ClassB1B2F1     // b1=b2=f1; only f2 is new → show b2→f2
+	ClassB1B2F2     // b1=b2=f2; f1 is the outlier → show b1→f1
+	ClassB1B2       // bases equal, features differ → show f1→f2 (most common: new commits, no rebase)
+	ClassB1F1F2     // b1=f1=f2; only b2 changed → show b1→b2
+	ClassB2F1       // b2=f1 → show b2→f2
 	ClassB1F2__B2F1 // cross-equal → show b2→f2
 
 	// Complex classes — need segmentation (M2+); M1 falls back to 2-way.
-	ClassB1F1    // old pair equal
-	ClassB1F2    // diagonal equal
-	ClassB2F2    // new pair equal
-	ClassF1F2    // features equal
+	ClassB1F1     // old pair equal
+	ClassB1F2     // diagonal equal
+	ClassB2F2     // new pair equal
+	ClassF1F2     // features equal
 	ClassConflict // all four different
 )
 

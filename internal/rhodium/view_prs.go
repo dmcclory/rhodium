@@ -2,6 +2,7 @@ package rhodium
 
 import (
 	"fmt"
+	"rhodium/internal/gh"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -133,12 +134,12 @@ func (v *prsView) delegate(msg tea.Msg) tea.Cmd {
 // mergePRs appends PRs whose (repo, number) aren't already in a.allPRs
 // and returns just the newly-added ones, so callers can kick off file
 // prefetch without redundantly re-fetching PRs already loaded.
-func mergePRs(a *app, prs []PR) []PR {
+func mergePRs(a *app, prs []gh.PR) []gh.PR {
 	seen := make(map[string]bool, len(a.allPRs))
 	for _, p := range a.allPRs {
 		seen[prKey(p.Repo, p.Number)] = true
 	}
-	var added []PR
+	var added []gh.PR
 	for _, p := range prs {
 		k := prKey(p.Repo, p.Number)
 		if seen[k] {
@@ -262,7 +263,7 @@ type prCols struct {
 }
 
 type prItem struct {
-	pr          PR
+	pr          gh.PR
 	summary     string
 	noteCount   int
 	scrutinized bool
@@ -333,7 +334,7 @@ func computePRCols(items []prItem) prCols {
 	return c
 }
 
-func prRepoNumStr(p PR) string {
+func prRepoNumStr(p gh.PR) string {
 	return fmt.Sprintf("%s#%d", p.Repo, p.Number)
 }
 
@@ -344,7 +345,7 @@ func prRepoNumStr(p PR) string {
 // where glyphs are CI rollup (✓ / ✗ / •) and a ⚠ for merge conflicts. An
 // empty string is returned when the PR has no review decision, isn't a
 // draft, and has no CI / conflict signals — keeps unimportant rows quiet.
-func renderPRStatus(p PR) string {
+func renderPRStatus(p gh.PR) string {
 	var labels []string
 	switch {
 	case p.IsDraft:

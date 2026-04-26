@@ -2,6 +2,7 @@ package rhodium
 
 import (
 	"path/filepath"
+	"rhodium/internal/gh"
 	"testing"
 )
 
@@ -79,14 +80,14 @@ func TestProbeAdvanceLocalOnly(t *testing.T) {
 	}
 	defer b.Close()
 
-	pr := PR{Repo: "acme/web", Number: 42, HeadSHA: "newhead", BaseSHA: "newbase"}
+	pr := gh.PR{Repo: "acme/web", Number: 42, HeadSHA: "newhead", BaseSHA: "newbase"}
 
 	// fcEmpty: patch has no hunks (pure rename / binary). decideAdvance
 	// should short-circuit with advanceNoHunks.
-	fcEmpty := FileChange{Path: "renamed.go", Patch: ""}
+	fcEmpty := gh.FileChange{Path: "renamed.go", Patch: ""}
 
 	// fcMarked: two hunks, both ticked off in the brain.
-	fcMarked := FileChange{Path: "src/main.go", Patch: samplePatch}
+	fcMarked := gh.FileChange{Path: "src/main.go", Patch: samplePatch}
 	hunks := parseHunks(samplePatch)
 	marks := map[string]bool{hunks[0].Hash: true, hunks[1].Hash: true}
 	if err := b.SetHunkMarks(pr.Repo, pr.Number, fcMarked.Path, marks); err != nil {
@@ -100,7 +101,7 @@ func TestProbeAdvanceLocalOnly(t *testing.T) {
 
 	// workers=0 means the fetch pool never spawns — anything not resolved
 	// in the first pass simply doesn't appear in the output map.
-	got := probeAdvance(b, pr, []FileChange{fcEmpty, fcMarked}, states, 0)
+	got := probeAdvance(b, pr, []gh.FileChange{fcEmpty, fcMarked}, states, 0)
 
 	if got[fcEmpty.Path] != advanceNoHunks {
 		t.Errorf("empty patch: got %v, want advanceNoHunks", got[fcEmpty.Path])

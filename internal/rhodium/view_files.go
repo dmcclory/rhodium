@@ -2,6 +2,7 @@ package rhodium
 
 import (
 	"fmt"
+	"rhodium/internal/gh"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -379,7 +380,7 @@ func patchNewFileLines(a *app, key, path string) []string {
 // --- fileItem ---
 
 type fileItem struct {
-	fc           FileChange
+	fc           gh.FileChange
 	status       FileStatus
 	noteCount    int
 	needsCatchUp bool // PR head moved since this file was last reviewed

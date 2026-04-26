@@ -3,6 +3,7 @@ package rhodium
 import (
 	"encoding/json"
 	"path/filepath"
+	"rhodium/internal/gh"
 	"testing"
 )
 
@@ -27,7 +28,7 @@ func TestBrainHunkMarks(t *testing.T) {
 	}
 	defer b.Close()
 
-	fc := FileChange{Path: "src/main.go", Patch: samplePatch}
+	fc := gh.FileChange{Path: "src/main.go", Patch: samplePatch}
 	hunks := parseHunks(samplePatch)
 	if len(hunks) != 2 {
 		t.Fatalf("expected 2 hunks, got %d", len(hunks))
@@ -67,7 +68,7 @@ func TestBrainHunkMarks(t *testing.T) {
 -gone
 +added
 `
-	if s := b.Status("acme/web", 42, FileChange{Path: "src/main.go", Patch: shifted}); s != StatusSeen {
+	if s := b.Status("acme/web", 42, gh.FileChange{Path: "src/main.go", Patch: shifted}); s != StatusSeen {
 		t.Errorf("shifted line numbers: got %v, want StatusSeen", s)
 	}
 
@@ -96,7 +97,7 @@ func TestBrainPRCache(t *testing.T) {
 		t.Errorf("fresh cache: got %d, want 0", len(prs))
 	}
 
-	want := []PR{
+	want := []gh.PR{
 		{Repo: "cli/cli", Number: 1, Title: "fix thing", Author: "alice", HeadSHA: "abc123"},
 		{Repo: "charm/bubbletea", Number: 2, Title: "add feature", Author: "bob", HeadSHA: "def456"},
 	}

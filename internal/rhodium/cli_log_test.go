@@ -1,6 +1,7 @@
 package rhodium
 
 import (
+	"rhodium/internal/gh"
 	"testing"
 )
 
@@ -39,10 +40,10 @@ func TestOverlayCommitStatusFullyReviewed(t *testing.T) {
  context
 +added line
 `
-	files := []FileChange{{Path: "a.go", Patch: patch}}
+	files := []gh.FileChange{{Path: "a.go", Patch: patch}}
 	marks := makeMarksFromPatch("a.go", patch)
 
-	got := overlayCommitStatus(Commit{SHA: "abc"}, files, marks)
+	got := overlayCommitStatus(gh.Commit{SHA: "abc"}, files, marks)
 	if got.Total != 1 || got.Marked != 1 {
 		t.Errorf("fully-reviewed: got %d/%d, want 1/1", got.Marked, got.Total)
 	}
@@ -60,10 +61,10 @@ func TestOverlayCommitStatusPartiallyReviewed(t *testing.T) {
  gamma
 +delta
 `
-	files := []FileChange{{Path: "a.go", Patch: patch}}
+	files := []gh.FileChange{{Path: "a.go", Patch: patch}}
 	marks := makeMarksFromPatch("a.go", patch, 0)
 
-	got := overlayCommitStatus(Commit{SHA: "abc"}, files, marks)
+	got := overlayCommitStatus(gh.Commit{SHA: "abc"}, files, marks)
 	if got.Marked != 1 || got.Total != 2 {
 		t.Errorf("partial: got %d/%d, want 1/2", got.Marked, got.Total)
 	}
@@ -77,10 +78,10 @@ func TestOverlayCommitStatusUnreviewed(t *testing.T) {
  context
 +added
 `
-	files := []FileChange{{Path: "a.go", Patch: patch}}
+	files := []gh.FileChange{{Path: "a.go", Patch: patch}}
 	marks := map[string]map[string]bool{} // no marks at all
 
-	got := overlayCommitStatus(Commit{SHA: "abc"}, files, marks)
+	got := overlayCommitStatus(gh.Commit{SHA: "abc"}, files, marks)
 	if got.Marked != 0 || got.Total != 1 {
 		t.Errorf("unreviewed: got %d/%d, want 0/1", got.Marked, got.Total)
 	}
@@ -92,7 +93,7 @@ func TestOverlayCommitStatusUnreviewed(t *testing.T) {
 func TestOverlayCommitStatusMergeCommitNoPatch(t *testing.T) {
 	// Merge commits commonly arrive with an empty patch — no reviewable
 	// hunks. Should report 0/0 and render as blank rather than "reviewed".
-	got := overlayCommitStatus(Commit{SHA: "abc"}, []FileChange{{Path: "a.go", Patch: ""}}, nil)
+	got := overlayCommitStatus(gh.Commit{SHA: "abc"}, []gh.FileChange{{Path: "a.go", Patch: ""}}, nil)
 	if got.Total != 0 || len(got.Files) != 0 {
 		t.Errorf("merge commit: got total=%d files=%d, want 0/0", got.Total, len(got.Files))
 	}
@@ -121,8 +122,8 @@ func TestOverlayCommitStatusRewrittenHunkCaveat(t *testing.T) {
 	marks := makeMarksFromPatch("a.go", finalPatch) // marks the rewritten hunk
 
 	got := overlayCommitStatus(
-		Commit{SHA: "abc"},
-		[]FileChange{{Path: "a.go", Patch: originalPatch}},
+		gh.Commit{SHA: "abc"},
+		[]gh.FileChange{{Path: "a.go", Patch: originalPatch}},
 		marks,
 	)
 	if got.Marked != 0 || got.Total != 1 {
@@ -144,7 +145,7 @@ func TestOverlayCommitStatusAggregatesAcrossFiles(t *testing.T) {
  ctx
 +b2
 `
-	files := []FileChange{
+	files := []gh.FileChange{
 		{Path: "a.go", Patch: patchA},
 		{Path: "b.go", Patch: patchB},
 	}
@@ -157,7 +158,7 @@ func TestOverlayCommitStatusAggregatesAcrossFiles(t *testing.T) {
 		marks["b.go"][h] = v
 	}
 
-	got := overlayCommitStatus(Commit{SHA: "abc"}, files, marks)
+	got := overlayCommitStatus(gh.Commit{SHA: "abc"}, files, marks)
 	if got.Marked != 2 || got.Total != 3 {
 		t.Errorf("aggregate: got %d/%d, want 2/3", got.Marked, got.Total)
 	}

@@ -105,9 +105,9 @@ func shellJoin(args []string) string {
 
 // nvimPluginPath returns the absolute path to rhodium.lua if we can find one.
 // Precedence:
-//   1. $RHODIUM_NVIM_PLUGIN
-//   2. editor/nvim/rhodium.lua beside the running binary
-//   3. editor/nvim/rhodium.lua one level up (for `bin/rhodium` layouts)
+//  1. $RHODIUM_NVIM_PLUGIN
+//  2. editor/nvim/rhodium.lua beside the running binary
+//  3. editor/nvim/rhodium.lua one level up (for `bin/rhodium` layouts)
 //
 // Empty string means "rely on user's runtimepath."
 func nvimPluginPath() string {

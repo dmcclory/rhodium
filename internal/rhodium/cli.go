@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"rhodium/internal/gh"
 	"sort"
 	"strconv"
 	"strings"
@@ -386,9 +387,9 @@ func cmdTodo(args []string) error {
 		if err != nil {
 			return err
 		}
-		var all []PR
+		var all []gh.PR
 		for _, repo := range cfg.Repos {
-			prs, err := listPRs(repo)
+			prs, err := gh.ListPRs(repo)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "warn: %s: %v\n", repo, err)
 				continue
@@ -401,7 +402,7 @@ func cmdTodo(args []string) error {
 	}
 
 	cached := brain.CachedPRs()
-	byKey := map[string]PR{}
+	byKey := map[string]gh.PR{}
 	for _, p := range cached {
 		byKey[prKey(p.Repo, p.Number)] = p
 	}
@@ -601,7 +602,7 @@ func cmdState(args []string) error {
 	}
 	defer brain.Close()
 
-	files, err := listPRFiles(repo, num)
+	files, err := gh.ListPRFiles(repo, num)
 	if err != nil {
 		return err
 	}
@@ -735,7 +736,7 @@ func cmdNote(args []string) error {
 	var lineHash string
 	for _, p := range brain.CachedPRs() {
 		if p.Repo == repo && p.Number == num {
-			if content, err := fetchFileAtRef(repo, path, p.HeadSHA); err == nil && content != "" {
+			if content, err := gh.FetchFileAtRef(repo, path, p.HeadSHA); err == nil && content != "" {
 				lines := strings.Split(content, "\n")
 				if lineNo >= 1 && lineNo <= len(lines) {
 					lineHash = hashLine(lines[lineNo-1])
@@ -788,7 +789,7 @@ type commitStatus struct {
 // different hunk further down the history. That's the documented
 // approximation; it's the right tradeoff because any more precise
 // answer requires commit-SHA-keyed state that breaks under rebase.
-func overlayCommitStatus(c Commit, files []FileChange, marksByPath map[string]map[string]bool) commitStatus {
+func overlayCommitStatus(c gh.Commit, files []gh.FileChange, marksByPath map[string]map[string]bool) commitStatus {
 	out := commitStatus{
 		SHA:     c.SHA,
 		Title:   c.Title,
@@ -861,7 +862,7 @@ func cmdLog(args []string) error {
 	}
 	defer brain.Close()
 
-	commits, err := listPRCommits(repo, num)
+	commits, err := gh.ListPRCommits(repo, num)
 	if err != nil {
 		return err
 	}
@@ -872,7 +873,7 @@ func cmdLog(args []string) error {
 
 	// Build the PR-level marks map once, keyed by path. overlayCommitStatus
 	// reads this without a brain round-trip per commit.
-	prFiles, err := listPRFiles(repo, num)
+	prFiles, err := gh.ListPRFiles(repo, num)
 	if err != nil {
 		return err
 	}
@@ -886,7 +887,7 @@ func cmdLog(args []string) error {
 	// until someone complains.
 	statuses := make([]commitStatus, 0, len(commits))
 	for _, c := range commits {
-		files, err := fetchCommitFiles(repo, c.SHA)
+		files, err := gh.FetchCommitFiles(repo, c.SHA)
 		if err != nil {
 			return err
 		}

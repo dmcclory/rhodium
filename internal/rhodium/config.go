@@ -187,7 +187,6 @@ func (c *Config) DefaultAgentResolved() Agent {
 	return Agent{}
 }
 
-
 // RepoPath returns the local clone path for a repo. Looks up config first;
 // falls back to $RHODIUM_REPOS_ROOT/<repo-name> or ~/code/<repo-name>.
 func (c *Config) RepoPath(repo string) string {

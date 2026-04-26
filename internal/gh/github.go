@@ -1,4 +1,4 @@
-package rhodium
+package gh
 
 import (
 	"bytes"
@@ -53,7 +53,7 @@ type ghStatusCheckRollup struct {
 	Conclusion string `json:"conclusion"` // SUCCESS, FAILURE, NEUTRAL, CANCELLED, SKIPPED, TIMED_OUT, ACTION_REQUIRED, STALE
 }
 
-func listPRs(repo string) ([]PR, error) {
+func ListPRs(repo string) ([]PR, error) {
 	out, err := exec.Command("gh", "pr", "list",
 		"--repo", repo,
 		"--json", "number,title,author,headRefOid,baseRefOid,body,reviewDecision,isDraft,mergeable,statusCheckRollup",
@@ -142,7 +142,7 @@ type ghAPIFile struct {
 
 // listPRFiles fetches the PR's changed files via `gh api`, returning per-file
 // blob SHAs and patches in a single call.
-func listPRFiles(repo string, number int) ([]FileChange, error) {
+func ListPRFiles(repo string, number int) ([]FileChange, error) {
 	out, err := exec.Command("gh", "api",
 		"--paginate",
 		fmt.Sprintf("repos/%s/pulls/%d/files", repo, number),
@@ -171,7 +171,7 @@ func listPRFiles(repo string, number int) ([]FileChange, error) {
 // GitHub compare API. Files not in the result haven't changed — they're
 // automatically caught up. The returned FileChanges include patches for only
 // the delta between base and head.
-func fetchCompare(repo, base, head string) ([]FileChange, error) {
+func FetchCompare(repo, base, head string) ([]FileChange, error) {
 	out, err := exec.Command("gh", "api",
 		fmt.Sprintf("repos/%s/compare/%s...%s", repo, base, head),
 	).Output()
@@ -199,7 +199,7 @@ func fetchCompare(repo, base, head string) ([]FileChange, error) {
 
 // fetchFileAtRef fetches file content at a specific git ref (commit SHA, branch).
 // Returns "" if the file doesn't exist at that ref (e.g., new file).
-func fetchFileAtRef(repo, path, ref string) (string, error) {
+func FetchFileAtRef(repo, path, ref string) (string, error) {
 	out, err := exec.Command("gh", "api",
 		fmt.Sprintf("repos/%s/contents/%s?ref=%s", repo, path, ref),
 	).Output()
@@ -251,7 +251,7 @@ type ghAPICommit struct {
 // listPRCommits returns the commits on a PR in author/committer order
 // (oldest first — the order GitHub returns them). Pagination is required
 // for PRs with > 100 commits, but rare for review-scale work.
-func listPRCommits(repo string, number int) ([]Commit, error) {
+func ListPRCommits(repo string, number int) ([]Commit, error) {
 	out, err := exec.Command("gh", "api",
 		"--paginate",
 		fmt.Sprintf("repos/%s/pulls/%d/commits", repo, number),
@@ -281,7 +281,7 @@ func listPRCommits(repo string, number int) ([]Commit, error) {
 // patches — same shape as pulls/:n/files per file. Merge commits often
 // return empty patches; callers should treat missing patches as "no
 // reviewable hunks from this commit".
-func fetchCommitFiles(repo, sha string) ([]FileChange, error) {
+func FetchCommitFiles(repo, sha string) ([]FileChange, error) {
 	out, err := exec.Command("gh", "api",
 		fmt.Sprintf("repos/%s/commits/%s", repo, sha),
 	).Output()
@@ -335,7 +335,7 @@ type ghAPIContributor struct {
 // (sorted by contribution count, descending — GitHub's default). One call
 // per repo is cached on *app for the rest of the session; this function has
 // no caching of its own.
-func listContributors(repo string) ([]Contributor, error) {
+func ListContributors(repo string) ([]Contributor, error) {
 	out, err := exec.Command("gh", "api",
 		"--paginate",
 		fmt.Sprintf("repos/%s/contributors?per_page=100", repo),
@@ -384,7 +384,7 @@ type ghAPIComment struct {
 // visible on the PR immediately. If you want batch semantics, switch to the
 // reviews endpoint with `comments: [...]`, but the user explicitly asked for
 // fire-and-forget per-comment publication.
-func postInlineComment(repo string, prNum int, c InlineComment) (int64, error) {
+func PostInlineComment(repo string, prNum int, c InlineComment) (int64, error) {
 	args := []string{
 		"api",
 		"--method", "POST",
@@ -426,7 +426,7 @@ const (
 // submitReview submits a PR review with the given event. body may be empty
 // for APPROVE; GitHub rejects an empty body with REQUEST_CHANGES/COMMENT so
 // the caller should validate before calling.
-func submitReview(repo string, prNum int, event ReviewEvent, body string) error {
+func SubmitReview(repo string, prNum int, event ReviewEvent, body string) error {
 	args := []string{
 		"api",
 		"--method", "POST",
@@ -447,7 +447,7 @@ func submitReview(repo string, prNum int, event ReviewEvent, body string) error 
 
 // fetchGitHubUser returns the login of whoever `gh` is authenticated as.
 // Used to auto-populate Config.GitHubUser when the user hasn't set it.
-func fetchGitHubUser() (string, error) {
+func FetchUser() (string, error) {
 	out, err := exec.Command("gh", "api", "user").Output()
 	if err != nil {
 		return "", fmt.Errorf("gh api user: %w", err)
@@ -473,7 +473,7 @@ const (
 // mergePR merges a PR. message is the commit message body; empty lets GitHub
 // generate the default (usually the PR body for squash, or a "Merge pull
 // request #N" line for merge commits).
-func mergePR(repo string, prNum int, method MergeMethod, message string) error {
+func MergePR(repo string, prNum int, method MergeMethod, message string) error {
 	args := []string{
 		"api",
 		"--method", "PUT",
@@ -492,7 +492,7 @@ func mergePR(repo string, prNum int, method MergeMethod, message string) error {
 	return nil
 }
 
-// GHComment is a unified view over GitHub's three comment streams on a PR:
+// Comment is a unified view over GitHub's three comment streams on a PR:
 //
 //   - "issue":   general PR comments (the `issues/:n/comments` endpoint).
 //   - "review":  the wrapper a reviewer posts when they hit Approve / Request
@@ -501,7 +501,7 @@ func mergePR(repo string, prNum int, method MergeMethod, message string) error {
 //
 // The diff view renders inline comments alongside local notes; the PR-level
 // comments view shows everything sorted by CreatedAt.
-type GHComment struct {
+type Comment struct {
 	Type      string // "issue", "review", or "inline"
 	Author    string
 	Body      string
@@ -545,8 +545,8 @@ type ghInlineComment struct {
 // fetchPRComments pulls all three comment streams for a PR. Best-effort:
 // individual stream errors are swallowed so the UI gets whatever's available
 // (e.g. a PR with no inline comments still returns reviews + issue comments).
-func fetchPRComments(repo string, number int) ([]GHComment, error) {
-	var out []GHComment
+func FetchPRComments(repo string, number int) ([]Comment, error) {
+	var out []Comment
 
 	if data, err := exec.Command("gh", "api", "--paginate",
 		fmt.Sprintf("repos/%s/issues/%d/comments", repo, number),
@@ -554,7 +554,7 @@ func fetchPRComments(repo string, number int) ([]GHComment, error) {
 		var items []ghIssueComment
 		if json.Unmarshal(data, &items) == nil {
 			for _, it := range items {
-				out = append(out, GHComment{
+				out = append(out, Comment{
 					Type:      "issue",
 					Author:    it.User.Login,
 					Body:      it.Body,
@@ -586,7 +586,7 @@ func fetchPRComments(repo string, number int) ([]GHComment, error) {
 						continue
 					}
 				}
-				out = append(out, GHComment{
+				out = append(out, Comment{
 					Type:      "review",
 					Author:    it.User.Login,
 					Body:      it.Body,
@@ -604,7 +604,7 @@ func fetchPRComments(repo string, number int) ([]GHComment, error) {
 		var items []ghInlineComment
 		if json.Unmarshal(data, &items) == nil {
 			for _, it := range items {
-				out = append(out, GHComment{
+				out = append(out, Comment{
 					Type:      "inline",
 					Author:    it.User.Login,
 					Body:      it.Body,
@@ -621,7 +621,7 @@ func fetchPRComments(repo string, number int) ([]GHComment, error) {
 	return out, nil
 }
 
-func fetchBlob(repo, sha string) (string, error) {
+func FetchBlob(repo, sha string) (string, error) {
 	out, err := exec.Command("gh", "api",
 		fmt.Sprintf("repos/%s/git/blobs/%s", repo, sha),
 	).Output()

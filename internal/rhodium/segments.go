@@ -8,8 +8,8 @@ import "strings"
 // Algorithm (from Iron's patdiff4/lib/segments.ml):
 //
 //  1. Patience-diff each arm of the diamond:
-//       pcs1 = patience(b1, f1)   — the old-arm matches
-//       pcs2 = patience(b2, f2)   — the new-arm matches
+//     pcs1 = patience(b1, f1)   — the old-arm matches
+//     pcs2 = patience(b2, f2)   — the new-arm matches
 //
 //  2. Build content sequences from each PCS (pcs1[i]'s matched content is
 //     b1[pcs1[i].AIdx], which by construction equals f1[pcs1[i].BIdx]).

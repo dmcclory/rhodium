@@ -2,6 +2,7 @@ package rhodium
 
 import (
 	"fmt"
+	"rhodium/internal/gh"
 	"sync"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -13,7 +14,7 @@ import (
 // they arrive.
 func loadRepoPRsCmd(repo string) tea.Cmd {
 	return func() tea.Msg {
-		prs, err := listPRs(repo)
+		prs, err := gh.ListPRs(repo)
 		if err != nil {
 			return prsLoadedMsg{err: fmt.Errorf("%s: %w", repo, err)}
 		}
@@ -21,7 +22,7 @@ func loadRepoPRsCmd(repo string) tea.Cmd {
 	}
 }
 
-func loadFilesCmd(pr PR) tea.Cmd {
+func loadFilesCmd(pr gh.PR) tea.Cmd {
 	return func() tea.Msg {
 		return fetchOne(pr)
 	}
@@ -30,9 +31,9 @@ func loadFilesCmd(pr PR) tea.Cmd {
 // loadCommentsCmd fetches the three GH comment streams for a PR. Errors
 // surface as commentsLoadedMsg.err so the UI can flash a status; a partial
 // success (some streams empty) still returns a usable comments slice.
-func loadCommentsCmd(pr PR) tea.Cmd {
+func loadCommentsCmd(pr gh.PR) tea.Cmd {
 	return func() tea.Msg {
-		comments, err := fetchPRComments(pr.Repo, pr.Number)
+		comments, err := gh.FetchPRComments(pr.Repo, pr.Number)
 		return commentsLoadedMsg{repo: pr.Repo, prNum: pr.Number, comments: comments, err: err}
 	}
 }
@@ -51,7 +52,7 @@ func loadCommentsCmd(pr PR) tea.Cmd {
 // update are skipped and left for the per-file flow in view_diff to classify.
 // We also notice "forget" — paths recorded in file_reviews that no longer
 // appear in the current PR files — and silently advance them.
-func autoAdvanceCmd(brain *Brain, pr PR, files []FileChange) tea.Cmd {
+func autoAdvanceCmd(brain *Brain, pr gh.PR, files []gh.FileChange) tea.Cmd {
 	return func() tea.Msg {
 		states := brain.AllFileReviewedStates(pr.Repo, pr.Number)
 		if len(states) == 0 {
@@ -59,7 +60,7 @@ func autoAdvanceCmd(brain *Brain, pr PR, files []FileChange) tea.Cmd {
 		}
 
 		// Index current files by path for O(1) forget-detection.
-		currentByPath := make(map[string]FileChange, len(files))
+		currentByPath := make(map[string]gh.FileChange, len(files))
 		for _, fc := range files {
 			currentByPath[fc.Path] = fc
 		}
@@ -71,7 +72,7 @@ func autoAdvanceCmd(brain *Brain, pr PR, files []FileChange) tea.Cmd {
 		//     → auto-advance with an advanceForget reason.
 		//   drifted:       SHAs moved since last review
 		//     → evaluate via decideAdvance (may need a content fetch).
-		var drifted []FileChange
+		var drifted []gh.FileChange
 		var forgotten []string
 		for path, s := range states {
 			if s.HeadSHA == "" {
@@ -151,12 +152,12 @@ func autoAdvanceCmd(brain *Brain, pr PR, files []FileChange) tea.Cmd {
 // (at the reviewer's last-seen head) only when needed — i.e., when the local
 // mark check didn't already decide. Fetches are parallelized across `workers`
 // goroutines since each is a separate `gh api` round-trip.
-func probeAdvance(brain *Brain, pr PR, drifted []FileChange, states map[string]FileReviewState, workers int) map[string]advanceReason {
+func probeAdvance(brain *Brain, pr gh.PR, drifted []gh.FileChange, states map[string]FileReviewState, workers int) map[string]advanceReason {
 	out := make(map[string]advanceReason, len(drifted))
 	var mu sync.Mutex
 
 	// First pass: resolve everything that doesn't need a fetch.
-	var needsFetch []FileChange
+	var needsFetch []gh.FileChange
 	for _, fc := range drifted {
 		hunks := parseHunks(fc.Patch)
 		marks := brain.HunkMarks(pr.Repo, pr.Number, fc.Path)
@@ -174,7 +175,7 @@ func probeAdvance(brain *Brain, pr PR, drifted []FileChange, states map[string]F
 		return out
 	}
 
-	jobs := make(chan FileChange)
+	jobs := make(chan gh.FileChange)
 	var wg sync.WaitGroup
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
@@ -187,12 +188,12 @@ func probeAdvance(brain *Brain, pr PR, drifted []FileChange, states map[string]F
 				// than another ref lookup. Fall back to ref fetch otherwise.
 				var f2 string
 				if fc.Blob != "" {
-					f2, _ = fetchBlob(pr.Repo, fc.Blob)
+					f2, _ = gh.FetchBlob(pr.Repo, fc.Blob)
 				}
 				if f2 == "" {
-					f2, _ = fetchFileAtRef(pr.Repo, fc.Path, pr.HeadSHA)
+					f2, _ = gh.FetchFileAtRef(pr.Repo, fc.Path, pr.HeadSHA)
 				}
-				f1, _ := fetchFileAtRef(pr.Repo, fc.Path, s.HeadSHA)
+				f1, _ := gh.FetchFileAtRef(pr.Repo, fc.Path, s.HeadSHA)
 
 				hunks := parseHunks(fc.Patch)
 				marks := brain.HunkMarks(pr.Repo, pr.Number, fc.Path)
@@ -211,18 +212,18 @@ func probeAdvance(brain *Brain, pr PR, drifted []FileChange, states map[string]F
 	return out
 }
 
-func fetchOne(pr PR) filesLoadedMsg {
-	files, err := listPRFiles(pr.Repo, pr.Number)
+func fetchOne(pr gh.PR) filesLoadedMsg {
+	files, err := gh.ListPRFiles(pr.Repo, pr.Number)
 	if err != nil {
 		return filesLoadedMsg{pr: pr, err: err}
 	}
 	return filesLoadedMsg{pr: pr, files: files}
 }
 
-func prefetchAllCmd(prs []PR) tea.Cmd {
+func prefetchAllCmd(prs []gh.PR) tea.Cmd {
 	const workers = 4
 	return func() tea.Msg {
-		jobs := make(chan PR)
+		jobs := make(chan gh.PR)
 		done := make(chan struct{})
 		var wg sync.WaitGroup
 		for i := 0; i < workers; i++ {

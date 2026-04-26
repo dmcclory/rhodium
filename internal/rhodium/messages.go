@@ -1,17 +1,19 @@
 package rhodium
 
+import "rhodium/internal/gh"
+
 // tea.Msg types used by the TUI. Grouped here (rather than next to the
 // handlers) so it's easy to see the full set of async events the update
 // loop has to handle.
 
 type prsLoadedMsg struct {
-	prs []PR
+	prs []gh.PR
 	err error
 }
 
 type filesLoadedMsg struct {
-	pr    PR
-	files []FileChange
+	pr    gh.PR
+	files []gh.FileChange
 	err   error
 }
 
@@ -29,7 +31,7 @@ type blobLoadedMsg struct {
 
 type catchUpLoadedMsg struct {
 	path  string
-	files []FileChange
+	files []gh.FileChange
 	err   error
 }
 
@@ -71,7 +73,7 @@ type actionDoneMsg struct {
 // (keeps brain writes serialized with the rest of the update cycle).
 type inlineNotesReadyMsg struct {
 	action string
-	pr     PR
+	pr     gh.PR
 	notes  []agentNote
 }
 
@@ -84,23 +86,23 @@ type notePublishedMsg struct {
 	err    error
 }
 
-// reviewSubmittedMsg lands back on the update loop after submitReview
+// reviewSubmittedMsg lands back on the update loop after gh.SubmitReview
 // returns. event echoes what we asked for (for the status line); err is
 // nil on success.
 type reviewSubmittedMsg struct {
-	repo   string
-	prNum  int
-	event  ReviewEvent
-	err    error
+	repo  string
+	prNum int
+	event gh.ReviewEvent
+	err   error
 }
 
-// mergeSubmittedMsg lands back on the update loop after mergePR returns.
+// mergeSubmittedMsg lands back on the update loop after gh.MergePR returns.
 // The PR is not removed from allPRs here — the next repo refresh drops it
 // when GitHub stops listing it as open.
 type mergeSubmittedMsg struct {
 	repo   string
 	prNum  int
-	method MergeMethod
+	method gh.MergeMethod
 	err    error
 }
 
@@ -108,16 +110,16 @@ type mergeSubmittedMsg struct {
 // fetch completes. Results are cached on *app keyed by repo.
 type contributorsLoadedMsg struct {
 	repo         string
-	contributors []Contributor
+	contributors []gh.Contributor
 	err          error
 }
 
-// commentsLoadedMsg lands back on the update loop after fetchPRComments
+// commentsLoadedMsg lands back on the update loop after gh.FetchPRComments
 // returns. Cached per (repo, number) so subsequent opens are instant; a
 // session restart re-fetches.
 type commentsLoadedMsg struct {
 	repo     string
 	prNum    int
-	comments []GHComment
+	comments []gh.Comment
 	err      error
 }
