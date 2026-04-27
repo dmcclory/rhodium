@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"rhodium/internal/brain"
 	"rhodium/internal/gh"
+	"rhodium/internal/tui/router"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/viewport"
@@ -26,7 +27,7 @@ import (
 
 type commentsView struct {
 	vp       viewport.Model
-	returnTo view // viewPRs / viewTodo / viewFiles
+	returnTo router.Route // RoutePRs / RouteTodo / RouteFiles
 }
 
 func newCommentsView() commentsView {
@@ -63,8 +64,7 @@ func (v *commentsView) bindings(a *app) []Binding {
 			Name: "back", Keys: []string{"esc", "h", "left"},
 			Desc: "back", Group: "Navigate",
 			Action: func(a *app) tea.Cmd {
-				a.layout.focus(v.returnTo)
-				return nil
+				return router.Navigate(v.returnTo)
 			},
 		},
 	}

@@ -5,6 +5,7 @@ import (
 	"rhodium/internal/brain"
 	"rhodium/internal/diff"
 	"rhodium/internal/gh"
+	"rhodium/internal/tui/router"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -97,11 +98,9 @@ func (v *filesView) bindings(a *app) []Binding {
 			Action: func(a *app) tea.Cmd {
 				v.tab = tabFiles
 				if a.session.listOrigin == viewTodo {
-					a.layout.focus(viewTodo)
-				} else {
-					a.layout.focus(viewPRs)
+					return router.Navigate(router.RouteTodo)
 				}
-				return nil
+				return router.Navigate(router.RoutePRs)
 			},
 		},
 		{
@@ -138,7 +137,7 @@ func (v *filesView) bindings(a *app) []Binding {
 				if a.session.selectedPR == nil {
 					return nil
 				}
-				return a.openComments(viewFiles)
+				return a.openComments(router.RouteFiles)
 			},
 		},
 	}, agentBindings(a.cfg)...)

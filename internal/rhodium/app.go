@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"rhodium/internal/brain"
 	"rhodium/internal/gh"
+	"rhodium/internal/tui/router"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -140,6 +141,10 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.onCommentsLoaded(m)
 	case pollTickMsg:
 		return a, a.onPollTick(m)
+
+	case router.NavigatedMsg:
+		a.onNavigated(m)
+		return a, nil
 
 	case tea.KeyMsg:
 		if a.help.open {
@@ -290,7 +295,7 @@ func (a *app) openFile(fc gh.FileChange) tea.Cmd {
 // fetch was kicked off when the PR was opened, so usually they're already
 // cached; if not, the view shows a "loading" placeholder until
 // commentsLoadedMsg lands.
-func (a *app) openComments(returnTo view) tea.Cmd {
+func (a *app) openComments(returnTo router.Route) tea.Cmd {
 	if a.session.selectedPR == nil {
 		return nil
 	}
@@ -390,6 +395,25 @@ func (a *app) footer() string {
 }
 
 // --- async message handlers ---
+
+// onNavigated is the bridge between router.Route (the view-package-facing
+// vocabulary) and the view enum (internal to app.go). The view enum stays
+// here so View()/routeKey/routeToActive switches keep their compile-time
+// exhaustiveness; bindings see Route only.
+func (a *app) onNavigated(m router.NavigatedMsg) {
+	switch m.To {
+	case router.RouteTodo:
+		a.layout.focus(viewTodo)
+	case router.RoutePRs:
+		a.layout.focus(viewPRs)
+	case router.RouteFiles:
+		a.layout.focus(viewFiles)
+	case router.RouteDiff:
+		a.layout.focus(viewDiff)
+	case router.RouteComments:
+		a.layout.focus(viewComments)
+	}
+}
 
 func (a *app) onPRsLoaded(msg prsLoadedMsg) tea.Cmd {
 	if msg.err != nil {

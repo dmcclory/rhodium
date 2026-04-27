@@ -5,6 +5,7 @@ import (
 	"rhodium/internal/brain"
 	"rhodium/internal/diff"
 	"rhodium/internal/gh"
+	"rhodium/internal/tui/router"
 	"strings"
 	"unicode"
 
@@ -846,10 +847,9 @@ func (v *diffView) bindings(a *app) []Binding {
 			Name: "back", Keys: []string{"esc", "h", "left"},
 			Desc: "back to files", Group: "Navigate",
 			Action: func(a *app) tea.Cmd {
-				a.layout.focus(viewFiles)
 				a.files.rebuild(a)
 				a.prs.rebuild(a)
-				return nil
+				return router.Navigate(router.RouteFiles)
 			},
 		},
 		{
@@ -887,9 +887,9 @@ func (v *diffView) bindings(a *app) []Binding {
 			Desc: "back to files (when all marked)", Group: "Navigate",
 			Action: func(a *app) tea.Cmd {
 				if v.allMarked() {
-					a.layout.focus(viewFiles)
 					a.files.rebuild(a)
 					a.prs.rebuild(a)
+					return router.Navigate(router.RouteFiles)
 				}
 				return nil
 			},

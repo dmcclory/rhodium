@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"rhodium/internal/brain"
 	"rhodium/internal/gh"
+	"rhodium/internal/tui/router"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -50,8 +51,7 @@ func (v *todoView) bindings(a *app) []Binding {
 			Name: "all-prs", Keys: []string{"a"},
 			Desc: "all PRs", Group: "Navigate",
 			Action: func(a *app) tea.Cmd {
-				a.layout.focus(viewPRs)
-				return nil
+				return router.Navigate(router.RoutePRs)
 			},
 		},
 		{
@@ -96,9 +96,9 @@ func (v *todoView) bindings(a *app) []Binding {
 				}
 				a.session.selectedPR = &it.pr
 				if _, cached := a.cache.prComments[brain.PRKey(it.pr.Repo, it.pr.Number)]; !cached {
-					return tea.Batch(loadCommentsCmd(it.pr), a.openComments(viewTodo))
+					return tea.Batch(loadCommentsCmd(it.pr), a.openComments(router.RouteTodo))
 				}
-				return a.openComments(viewTodo)
+				return a.openComments(router.RouteTodo)
 			},
 		},
 	}
