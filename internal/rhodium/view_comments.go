@@ -74,11 +74,11 @@ func (v *commentsView) bindings(a *app) []Binding {
 // viewport. Called whenever the comments view is opened or new comments
 // land while the view is active.
 func (v *commentsView) rebuild(a *app) {
-	if a.selectedPR == nil {
+	if a.session.selectedPR == nil {
 		v.vp.SetContent("(no PR selected)")
 		return
 	}
-	pr := *a.selectedPR
+	pr := *a.session.selectedPR
 	comments, ok := a.cache.prComments[brain.PRKey(pr.Repo, pr.Number)]
 
 	header := lipgloss.NewStyle().Bold(true).Render(

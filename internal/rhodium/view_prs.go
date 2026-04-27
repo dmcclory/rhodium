@@ -95,7 +95,7 @@ func (v *prsView) bindings(a *app) []Binding {
 				if !ok {
 					return nil
 				}
-				a.selectedPR = &it.pr
+				a.session.selectedPR = &it.pr
 				if _, cached := a.cache.prComments[brain.PRKey(it.pr.Repo, it.pr.Number)]; !cached {
 					return tea.Batch(loadCommentsCmd(it.pr), a.openComments(viewPRs))
 				}

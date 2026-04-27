@@ -22,10 +22,10 @@ import (
 // user should see immediately ("no PR selected"); async failures surface via
 // actionDoneMsg.
 func runAction(a *app, action Action) (tea.Cmd, error) {
-	if a.selectedPR == nil {
+	if a.session.selectedPR == nil {
 		return nil, fmt.Errorf("no PR selected")
 	}
-	pr := *a.selectedPR
+	pr := *a.session.selectedPR
 	files := a.cache.prFiles[brain.PRKey(pr.Repo, pr.Number)]
 
 	agent := a.cfg.DefaultAgentResolved()

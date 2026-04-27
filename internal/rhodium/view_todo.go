@@ -94,7 +94,7 @@ func (v *todoView) bindings(a *app) []Binding {
 				if !ok {
 					return nil
 				}
-				a.selectedPR = &it.pr
+				a.session.selectedPR = &it.pr
 				if _, cached := a.cache.prComments[brain.PRKey(it.pr.Repo, it.pr.Number)]; !cached {
 					return tea.Batch(loadCommentsCmd(it.pr), a.openComments(viewTodo))
 				}
@@ -133,10 +133,10 @@ func (v *todoView) rebuild(a *app) {
 		// things reviewed.
 		isActionableNow := ti != nil && !(len(ti.tags) == 1 && ti.tags[0] == "unseen")
 		if isActionableNow {
-			a.pinnedAttention[key] = true
+			a.session.pinAttention(key)
 		}
 
-		if a.pinnedAttention[key] {
+		if a.session.isPinnedAttention(key) {
 			if ti == nil {
 				ti = &todoItem{pr: pr, tags: []string{"done"}}
 			}

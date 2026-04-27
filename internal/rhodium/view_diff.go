@@ -158,7 +158,7 @@ func (v *diffView) Update(a *app, msg tea.Msg) tea.Cmd {
 // we enter catch-up mode: fetch only the delta and show that instead of
 // the full PR diff.
 func (v *diffView) open(a *app, fc gh.FileChange) tea.Cmd {
-	a.selectedFile = fc.Path
+	a.session.selectedFile = fc.Path
 	a.activeView = viewDiff
 	v.blob = ""
 	v.catchUpMode = false
@@ -170,13 +170,13 @@ func (v *diffView) open(a *app, fc gh.FileChange) tea.Cmd {
 	v.segmentViewIdx = 0
 	v.segmented = false
 
-	revState := a.brain.FileReviewedState(a.selectedPR.Repo, a.selectedPR.Number, fc.Path)
-	scrutinized := a.brain.IsScrutinized(a.selectedPR.Repo, a.selectedPR.Number)
-	needsCatchUp := !scrutinized && revState.HeadSHA != "" && (revState.HeadSHA != a.selectedPR.HeadSHA || revState.BaseSHA != a.selectedPR.BaseSHA)
+	revState := a.brain.FileReviewedState(a.session.selectedPR.Repo, a.session.selectedPR.Number, fc.Path)
+	scrutinized := a.brain.IsScrutinized(a.session.selectedPR.Repo, a.session.selectedPR.Number)
+	needsCatchUp := !scrutinized && revState.HeadSHA != "" && (revState.HeadSHA != a.session.selectedPR.HeadSHA || revState.BaseSHA != a.session.selectedPR.BaseSHA)
 
 	v.hunks = diff.ParseHunks(fc.Patch)
-	v.marks = a.brain.HunkMarks(a.selectedPR.Repo, a.selectedPR.Number, fc.Path)
-	v.notes = a.brain.NotesForFile(a.selectedPR.Repo, a.selectedPR.Number, fc.Path)
+	v.marks = a.brain.HunkMarks(a.session.selectedPR.Repo, a.session.selectedPR.Number, fc.Path)
+	v.notes = a.brain.NotesForFile(a.session.selectedPR.Repo, a.session.selectedPR.Number, fc.Path)
 	v.ghInline = ghInlineForFile(a, fc.Path)
 	v.hunkIdx = firstUnmarked(v.hunks, v.marks)
 	v.redraw()
@@ -187,11 +187,11 @@ func (v *diffView) open(a *app, fc gh.FileChange) tea.Cmd {
 	if needsCatchUp {
 		v.catchUpOldHead = revState.HeadSHA
 		v.catchUpOldBase = revState.BaseSHA
-		repo := a.selectedPR.Repo
+		repo := a.session.selectedPR.Repo
 		oldHead := revState.HeadSHA
 		oldBase := revState.BaseSHA
-		newHead := a.selectedPR.HeadSHA
-		newBase := a.selectedPR.BaseSHA
+		newHead := a.session.selectedPR.HeadSHA
+		newBase := a.session.selectedPR.BaseSHA
 		path := fc.Path
 		rebased := oldBase != newBase && oldBase != ""
 
@@ -232,7 +232,7 @@ func (v *diffView) open(a *app, fc gh.FileChange) tea.Cmd {
 	}
 
 	if fc.Blob != "" {
-		repo := a.selectedPR.Repo
+		repo := a.session.selectedPR.Repo
 		sha := fc.Blob
 		cmds = append(cmds, func() tea.Msg {
 			content, err := gh.FetchBlob(repo, sha)
@@ -253,7 +253,7 @@ func (v *diffView) onCatchUpLoaded(a *app, msg catchUpLoadedMsg) tea.Cmd {
 		a.statusMsg = "catch-up: " + msg.err.Error()
 		return nil
 	}
-	if a.activeView != viewDiff || a.selectedFile != msg.path {
+	if a.activeView != viewDiff || a.session.selectedFile != msg.path {
 		return nil
 	}
 	var deltaFC *gh.FileChange
@@ -266,16 +266,16 @@ func (v *diffView) onCatchUpLoaded(a *app, msg catchUpLoadedMsg) tea.Cmd {
 	if deltaFC == nil || deltaFC.Patch == "" {
 		v.catchUpMode = false
 		v.catchUpClass = diff.ClassB1B2__F1F2
-		a.statusMsg = fmt.Sprintf("✓ %s: %s (auto-caught-up)", a.selectedFile, diff.ClassB1B2__F1F2)
-		a.brain.SetFileReviewed(a.selectedPR.Repo, a.selectedPR.Number, a.selectedFile, a.selectedPR.HeadSHA, a.selectedPR.BaseSHA)
-		a.markSessionFileDone(a.selectedFile)
+		a.statusMsg = fmt.Sprintf("✓ %s: %s (auto-caught-up)", a.session.selectedFile, diff.ClassB1B2__F1F2)
+		a.brain.SetFileReviewed(a.session.selectedPR.Repo, a.session.selectedPR.Number, a.session.selectedFile, a.session.selectedPR.HeadSHA, a.session.selectedPR.BaseSHA)
+		a.markSessionFileDone(a.session.selectedFile)
 		return nil
 	}
 	v.catchUpMode = true
 	v.catchUpClass = diff.ClassB1B2
 	v.catchUpPatch = deltaFC.Patch
 	v.hunks = diff.ParseHunks(deltaFC.Patch)
-	v.marks = a.brain.HunkMarks(a.selectedPR.Repo, a.selectedPR.Number, a.selectedFile)
+	v.marks = a.brain.HunkMarks(a.session.selectedPR.Repo, a.session.selectedPR.Number, a.session.selectedFile)
 	v.hunkIdx = firstUnmarked(v.hunks, v.marks)
 	a.statusMsg = fmt.Sprintf("catch-up [%s]: f1→f2 since %s  (d: full diff)", diff.ClassB1B2, shortSHA(v.catchUpOldHead))
 	v.redraw()
@@ -288,7 +288,7 @@ func (v *diffView) onDiamondClassified(a *app, msg diamondClassifiedMsg) tea.Cmd
 		a.statusMsg = "classify: " + msg.err.Error()
 		return nil
 	}
-	if a.activeView != viewDiff || a.selectedFile != msg.path {
+	if a.activeView != viewDiff || a.session.selectedFile != msg.path {
 		return nil
 	}
 	v.catchUpClass = msg.class
@@ -300,9 +300,9 @@ func (v *diffView) onDiamondClassified(a *app, msg diamondClassifiedMsg) tea.Cmd
 		if msg.class.IsForget() {
 			label = "FORGET — base absorbed feature"
 		}
-		a.statusMsg = fmt.Sprintf("✓ %s: %s (auto-caught-up)", a.selectedFile, label)
-		a.brain.SetFileReviewed(a.selectedPR.Repo, a.selectedPR.Number, a.selectedFile, a.selectedPR.HeadSHA, a.selectedPR.BaseSHA)
-		a.markSessionFileDone(a.selectedFile)
+		a.statusMsg = fmt.Sprintf("✓ %s: %s (auto-caught-up)", a.session.selectedFile, label)
+		a.brain.SetFileReviewed(a.session.selectedPR.Repo, a.session.selectedPR.Number, a.session.selectedFile, a.session.selectedPR.HeadSHA, a.session.selectedPR.BaseSHA)
+		a.markSessionFileDone(a.session.selectedFile)
 		return nil
 	}
 
@@ -320,7 +320,7 @@ func (v *diffView) onDiamondClassified(a *app, msg diamondClassifiedMsg) tea.Cmd
 		v.catchUpPatch = ""
 		v.segmented = true
 	}
-	v.marks = a.brain.HunkMarks(a.selectedPR.Repo, a.selectedPR.Number, a.selectedFile)
+	v.marks = a.brain.HunkMarks(a.session.selectedPR.Repo, a.session.selectedPR.Number, a.session.selectedFile)
 	v.hunkIdx = firstUnmarked(v.hunks, v.marks)
 
 	if v.segmented {
@@ -342,10 +342,10 @@ func (v *diffView) onDiamondClassified(a *app, msg diamondClassifiedMsg) tea.Cmd
 // the given path. Empty result is fine — comments may not have loaded yet,
 // or the file simply has none.
 func ghInlineForFile(a *app, path string) []gh.Comment {
-	if a.selectedPR == nil {
+	if a.session.selectedPR == nil {
 		return nil
 	}
-	all := a.cache.prComments[brain.PRKey(a.selectedPR.Repo, a.selectedPR.Number)]
+	all := a.cache.prComments[brain.PRKey(a.session.selectedPR.Repo, a.session.selectedPR.Number)]
 	var out []gh.Comment
 	for _, c := range all {
 		if c.Type == "inline" && c.Path == path {
@@ -359,7 +359,7 @@ func ghInlineForFile(a *app, path string) []gh.Comment {
 // open file and redraws. Called by app.onCommentsLoaded so comments that
 // arrive while the diff view is already open still surface inline.
 func (v *diffView) refreshGHInline(a *app) {
-	v.ghInline = ghInlineForFile(a, a.selectedFile)
+	v.ghInline = ghInlineForFile(a, a.session.selectedFile)
 	v.redraw()
 }
 
@@ -553,28 +553,28 @@ func (v *diffView) cursorLineHash(lineNo int) string {
 // --- persistence helpers ---
 
 func (v *diffView) saveMarks(a *app) {
-	if a.selectedPR == nil || a.selectedFile == "" {
+	if a.session.selectedPR == nil || a.session.selectedFile == "" {
 		return
 	}
-	if err := a.brain.SetHunkMarks(a.selectedPR.Repo, a.selectedPR.Number, a.selectedFile, v.marks); err != nil {
+	if err := a.brain.SetHunkMarks(a.session.selectedPR.Repo, a.session.selectedPR.Number, a.session.selectedFile, v.marks); err != nil {
 		a.statusMsg = "save error: " + err.Error()
 		return
 	}
-	if a.selectedPR.HeadSHA != "" {
-		a.brain.SetFileReviewed(a.selectedPR.Repo, a.selectedPR.Number, a.selectedFile, a.selectedPR.HeadSHA, a.selectedPR.BaseSHA)
+	if a.session.selectedPR.HeadSHA != "" {
+		a.brain.SetFileReviewed(a.session.selectedPR.Repo, a.session.selectedPR.Number, a.session.selectedFile, a.session.selectedPR.HeadSHA, a.session.selectedPR.BaseSHA)
 	}
 	if v.allMarked() {
-		a.markSessionFileDone(a.selectedFile)
+		a.markSessionFileDone(a.session.selectedFile)
 	}
 }
 
 // --- editor launch ---
 
 func (v *diffView) openInEditor(a *app) (tea.Cmd, error) {
-	if a.selectedPR == nil || a.selectedFile == "" {
+	if a.session.selectedPR == nil || a.session.selectedFile == "" {
 		return nil, fmt.Errorf("nothing selected")
 	}
-	worktree, err := resolveWorktree(a.cfg, a.selectedPR.Repo, a.selectedPR.Number)
+	worktree, err := resolveWorktree(a.cfg, a.session.selectedPR.Repo, a.session.selectedPR.Number)
 	if err != nil {
 		return nil, err
 	}
@@ -584,9 +584,9 @@ func (v *diffView) openInEditor(a *app) (tea.Cmd, error) {
 			line = n
 		}
 	}
-	prKeyStr := fmt.Sprintf("%s#%d", a.selectedPR.Repo, a.selectedPR.Number)
-	a.statusMsg = fmt.Sprintf("opening %s:%d in %s", a.selectedFile, line, worktree)
-	return launchEditor(a.cfg, worktree, a.selectedFile, prKeyStr, line), nil
+	prKeyStr := fmt.Sprintf("%s#%d", a.session.selectedPR.Repo, a.session.selectedPR.Number)
+	a.statusMsg = fmt.Sprintf("opening %s:%d in %s", a.session.selectedFile, line, worktree)
+	return launchEditor(a.cfg, worktree, a.session.selectedFile, prKeyStr, line), nil
 }
 
 // --- key handling ---
@@ -608,10 +608,10 @@ func (v *diffView) updateNotingKeys(a *app, msg tea.KeyMsg) tea.Cmd {
 		v.noteInput.Blur()
 		v.restoreSize(a)
 		if body != "" {
-			if err := a.brain.SaveNote(a.selectedPR.Repo, a.selectedPR.Number, a.selectedFile, v.noteLineNo, v.noteLineHash, body); err != nil {
+			if err := a.brain.SaveNote(a.session.selectedPR.Repo, a.session.selectedPR.Number, a.session.selectedFile, v.noteLineNo, v.noteLineHash, body); err != nil {
 				a.statusMsg = "save note: " + err.Error()
 			} else {
-				v.notes = a.brain.NotesForFile(a.selectedPR.Repo, a.selectedPR.Number, a.selectedFile)
+				v.notes = a.brain.NotesForFile(a.session.selectedPR.Repo, a.session.selectedPR.Number, a.session.selectedFile)
 				v.redraw()
 			}
 		}
@@ -662,10 +662,10 @@ func (v *diffView) atMentionBoundary() bool {
 // cache and are instant. The picker opens with an empty query showing the
 // full contributor list.
 func (v *diffView) openMentionPicker(a *app) tea.Cmd {
-	if a.selectedPR == nil {
+	if a.session.selectedPR == nil {
 		return nil
 	}
-	repo := a.selectedPR.Repo
+	repo := a.session.selectedPR.Repo
 	v.mention.open = true
 	v.mention.query = ""
 	if cached, ok := a.cache.contributors[repo]; ok {
@@ -686,7 +686,7 @@ func (v *diffView) openMentionPicker(a *app) tea.Cmd {
 // been dismissed in the meantime this is a no-op — the cache is still
 // populated for next time.
 func (v *diffView) onContributorsReady(a *app, repo string) {
-	if !v.mention.open || a.selectedPR == nil || a.selectedPR.Repo != repo {
+	if !v.mention.open || a.session.selectedPR == nil || a.session.selectedPR.Repo != repo {
 		return
 	}
 	v.mention.loading = false
@@ -771,10 +771,10 @@ func (v *diffView) mentionBackspace(a *app, msg tea.KeyMsg) tea.Cmd {
 }
 
 func (v *diffView) refilterMentions(a *app) {
-	if a.selectedPR == nil {
+	if a.session.selectedPR == nil {
 		return
 	}
-	cached, ok := a.cache.contributors[a.selectedPR.Repo]
+	cached, ok := a.cache.contributors[a.session.selectedPR.Repo]
 	if !ok {
 		return
 	}
@@ -952,7 +952,7 @@ func (v *diffView) bindings(a *app) []Binding {
 				v.redraw()
 				v.hunkIdx = 0
 				v.jumpToHunk()
-				a.statusMsg = "cleared marks on " + a.selectedFile
+				a.statusMsg = "cleared marks on " + a.session.selectedFile
 				return nil
 			},
 		},
@@ -1025,7 +1025,7 @@ func (v *diffView) bindings(a *app) []Binding {
 					v.catchUpMode = false
 					v.segmented = false
 					v.hunks = diff.ParseHunks(fc.Patch)
-					v.marks = a.brain.HunkMarks(a.selectedPR.Repo, a.selectedPR.Number, fc.Path)
+					v.marks = a.brain.HunkMarks(a.session.selectedPR.Repo, a.session.selectedPR.Number, fc.Path)
 					v.hunkIdx = firstUnmarked(v.hunks, v.marks)
 					a.statusMsg = "full diff  (d: catch-up diff)"
 				} else {
@@ -1039,7 +1039,7 @@ func (v *diffView) bindings(a *app) []Binding {
 						v.segmented = false
 						a.statusMsg = fmt.Sprintf("catch-up [%s]: changes since %s  (d: full diff)", v.catchUpClass, shortSHA(v.catchUpOldHead))
 					}
-					v.marks = a.brain.HunkMarks(a.selectedPR.Repo, a.selectedPR.Number, fc.Path)
+					v.marks = a.brain.HunkMarks(a.session.selectedPR.Repo, a.session.selectedPR.Number, fc.Path)
 					v.hunkIdx = firstUnmarked(v.hunks, v.marks)
 				}
 				v.redraw()
@@ -1102,7 +1102,7 @@ func (v *diffView) restoreSize(a *app) {
 // HeadSHA; if the PR is rebased later, old comments outline themselves
 // (GitHub's normal behaviour).
 func (v *diffView) publishNoteAtCursor(a *app) tea.Cmd {
-	if a.selectedPR == nil || a.selectedFile == "" {
+	if a.session.selectedPR == nil || a.session.selectedFile == "" {
 		return nil
 	}
 	lineNo := v.cursorFileLine()
@@ -1122,8 +1122,8 @@ func (v *diffView) publishNoteAtCursor(a *app) tea.Cmd {
 		a.statusMsg = fmt.Sprintf("no unpublished note on line %d", lineNo)
 		return nil
 	}
-	pr := *a.selectedPR
-	path := a.selectedFile
+	pr := *a.session.selectedPR
+	path := a.session.selectedFile
 	noteID := target.ID
 	body := target.Body
 	commit := pr.HeadSHA

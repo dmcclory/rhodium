@@ -54,13 +54,9 @@ type app struct {
 	// cache holds GitHub-fetched data shared across views.
 	cache cache
 
-	pinnedAttention map[string]bool // pr keys pinned in todo's "needs attention"
-
-	selectedPR     *gh.PR
-	selectedFile   string
-	listViewOrigin view // whichever of viewTodo/viewPRs the user drilled from
-
-	reviewSession *brain.ReviewSession
+	// session is per-run navigation state — selected PR/file, active
+	// review session, where to return when the user backs out.
+	session session
 
 	statusMsg string
 
@@ -72,18 +68,18 @@ type app struct {
 
 func newApp(cfg *Config, b *brain.Brain) *app {
 	a := &app{
-		cfg:             cfg,
-		brain:           b,
-		activeView:      viewTodo,
-		todo:            newTodoView(),
-		prs:             newPRsView(),
-		files:           newFilesView(),
-		diff:            newDiffView(),
-		comments:        newCommentsView(),
-		review:          newReviewModal(),
-		merge:           newMergeModal(),
-		cache:           newCache(),
-		pinnedAttention: map[string]bool{},
+		cfg:        cfg,
+		brain:      b,
+		activeView: viewTodo,
+		todo:       newTodoView(),
+		prs:        newPRsView(),
+		files:      newFilesView(),
+		diff:       newDiffView(),
+		comments:   newCommentsView(),
+		review:     newReviewModal(),
+		merge:      newMergeModal(),
+		cache:      newCache(),
+		session:    newSession(),
 	}
 
 	cached := b.CachedPRs()
@@ -265,9 +261,9 @@ func (a *app) relayout() {
 // already cached. Bumps pollGen so any in-flight tick from a previous PR
 // stops silently.
 func (a *app) openPR(pr gh.PR) tea.Cmd {
-	a.listViewOrigin = a.activeView
-	a.selectedPR = &pr
-	a.reviewSession = a.brain.ActiveSession(pr.Repo, pr.Number)
+	a.session.listOrigin = a.activeView
+	a.session.selectedPR = &pr
+	a.session.review = a.brain.ActiveSession(pr.Repo, pr.Number)
 	a.activeView = viewFiles
 	a.files.rebuildDescVP(a)
 	a.pollGen++
@@ -299,7 +295,7 @@ func (a *app) openFile(fc gh.FileChange) tea.Cmd {
 // cached; if not, the view shows a "loading" placeholder until
 // commentsLoadedMsg lands.
 func (a *app) openComments(returnTo view) tea.Cmd {
-	if a.selectedPR == nil {
+	if a.session.selectedPR == nil {
 		return nil
 	}
 	a.comments.returnTo = returnTo
@@ -308,14 +304,14 @@ func (a *app) openComments(returnTo view) tea.Cmd {
 	return nil
 }
 
-// currentFile returns the gh.FileChange for a.selectedFile from the PR's
+// currentFile returns the gh.FileChange for a.session.selectedFile from the PR's
 // cached file list, if present.
 func (a *app) currentFile() (gh.FileChange, bool) {
-	if a.selectedPR == nil {
+	if a.session.selectedPR == nil {
 		return gh.FileChange{}, false
 	}
-	for _, f := range a.cache.prFiles[brain.PRKey(a.selectedPR.Repo, a.selectedPR.Number)] {
-		if f.Path == a.selectedFile {
+	for _, f := range a.cache.prFiles[brain.PRKey(a.session.selectedPR.Repo, a.session.selectedPR.Number)] {
+		if f.Path == a.session.selectedFile {
 			return f, true
 		}
 	}
@@ -363,11 +359,11 @@ func (a *app) outstandingPRCount() int {
 // finished a file (via full-diff catch-up resolution, auto-advance, or
 // all-hunks-marked).
 func (a *app) markSessionFileDone(path string) {
-	if a.reviewSession == nil || a.selectedPR == nil {
+	if a.session.review == nil || a.session.selectedPR == nil {
 		return
 	}
-	a.brain.SetSessionFileDone(a.reviewSession.ID, path, true)
-	a.reviewSession = a.brain.ActiveSession(a.selectedPR.Repo, a.selectedPR.Number)
+	a.brain.SetSessionFileDone(a.session.review.ID, path, true)
+	a.session.review = a.brain.ActiveSession(a.session.selectedPR.Repo, a.session.selectedPR.Number)
 }
 
 // --- footer composition ---
@@ -423,7 +419,7 @@ func (a *app) onFilesLoaded(msg filesLoadedMsg) tea.Cmd {
 	key := brain.PRKey(msg.pr.Repo, msg.pr.Number)
 	a.cache.prFiles[key] = msg.files
 	a.prs.rebuild(a)
-	if a.selectedPR != nil && brain.PRKey(a.selectedPR.Repo, a.selectedPR.Number) == key {
+	if a.session.selectedPR != nil && brain.PRKey(a.session.selectedPR.Repo, a.session.selectedPR.Number) == key {
 		a.files.rebuild(a)
 		a.files.list.Title = fmt.Sprintf("Files in %s#%d", msg.pr.Repo, msg.pr.Number)
 	}
@@ -436,9 +432,9 @@ func (a *app) onFilesLoaded(msg filesLoadedMsg) tea.Cmd {
 func (a *app) onAutoAdvance(msg autoAdvanceMsg) tea.Cmd {
 	if len(msg.advancedFiles) > 0 {
 		a.prs.rebuild(a)
-		if a.selectedPR != nil && brain.PRKey(a.selectedPR.Repo, a.selectedPR.Number) == msg.prKey {
+		if a.session.selectedPR != nil && brain.PRKey(a.session.selectedPR.Repo, a.session.selectedPR.Number) == msg.prKey {
 			a.files.rebuild(a)
-			a.reviewSession = a.brain.ActiveSession(a.selectedPR.Repo, a.selectedPR.Number)
+			a.session.review = a.brain.ActiveSession(a.session.selectedPR.Repo, a.session.selectedPR.Number)
 		}
 		a.statusMsg = fmt.Sprintf("✓ auto-caught-up %d files", len(msg.advancedFiles))
 	}
@@ -464,11 +460,11 @@ func (a *app) onEditorDone(msg editorDoneMsg) tea.Cmd {
 		a.statusMsg = "editor: " + msg.err.Error()
 		return nil
 	}
-	if a.selectedPR != nil {
-		pr := *a.selectedPR
-		if a.activeView == viewDiff && a.selectedFile != "" {
-			a.diff.marks = a.brain.HunkMarks(pr.Repo, pr.Number, a.selectedFile)
-			a.diff.notes = a.brain.NotesForFile(pr.Repo, pr.Number, a.selectedFile)
+	if a.session.selectedPR != nil {
+		pr := *a.session.selectedPR
+		if a.activeView == viewDiff && a.session.selectedFile != "" {
+			a.diff.marks = a.brain.HunkMarks(pr.Repo, pr.Number, a.session.selectedFile)
+			a.diff.notes = a.brain.NotesForFile(pr.Repo, pr.Number, a.session.selectedFile)
 			a.diff.redraw()
 		}
 		a.files.rebuild(a)
@@ -507,8 +503,8 @@ func (a *app) onInlineNotesReady(msg inlineNotesReadyMsg) tea.Cmd {
 	// Refresh list glyphs / diff overlay so new notes show up immediately.
 	a.files.rebuild(a)
 	a.prs.rebuild(a)
-	if a.activeView == viewDiff && a.selectedFile != "" {
-		a.diff.notes = a.brain.NotesForFile(msg.pr.Repo, msg.pr.Number, a.selectedFile)
+	if a.activeView == viewDiff && a.session.selectedFile != "" {
+		a.diff.notes = a.brain.NotesForFile(msg.pr.Repo, msg.pr.Number, a.session.selectedFile)
 		a.diff.redraw()
 	}
 	return nil
@@ -526,8 +522,8 @@ func (a *app) onNotePublished(msg notePublishedMsg) tea.Cmd {
 		a.statusMsg = "publish saved on GitHub but local stamp failed: " + err.Error()
 		return nil
 	}
-	if a.activeView == viewDiff && a.selectedPR != nil && a.selectedFile != "" {
-		a.diff.notes = a.brain.NotesForFile(a.selectedPR.Repo, a.selectedPR.Number, a.selectedFile)
+	if a.activeView == viewDiff && a.session.selectedPR != nil && a.session.selectedFile != "" {
+		a.diff.notes = a.brain.NotesForFile(a.session.selectedPR.Repo, a.session.selectedPR.Number, a.session.selectedFile)
 		a.diff.redraw()
 	}
 	a.statusMsg = fmt.Sprintf("published note → GitHub #%d", msg.ghID)
@@ -558,7 +554,7 @@ func (a *app) onMergeSubmitted(msg mergeSubmittedMsg) tea.Cmd {
 	a.statusMsg = fmt.Sprintf("merged: %s on %s#%d", msg.method, msg.repo, msg.prNum)
 	key := brain.PRKey(msg.repo, msg.prNum)
 	a.cache.dropPR(key)
-	delete(a.pinnedAttention, key)
+	delete(a.session.pinnedAttention, key)
 	a.prs.rebuild(a)
 	go a.brain.SetPRCache(a.cache.allPRs)
 	return nil
@@ -577,8 +573,8 @@ func (a *app) onCommentsLoaded(msg commentsLoadedMsg) tea.Cmd {
 	if a.activeView == viewComments {
 		a.comments.rebuild(a)
 	}
-	if a.activeView == viewDiff && a.selectedPR != nil &&
-		a.selectedPR.Repo == msg.repo && a.selectedPR.Number == msg.prNum {
+	if a.activeView == viewDiff && a.session.selectedPR != nil &&
+		a.session.selectedPR.Repo == msg.repo && a.session.selectedPR.Number == msg.prNum {
 		a.diff.refreshGHInline(a)
 	}
 	return nil
@@ -605,19 +601,19 @@ func (a *app) onContributorsLoaded(msg contributorsLoadedMsg) tea.Cmd {
 // Reschedules itself as long as a PR is selected and the tick belongs
 // to the current pollGen.
 func (a *app) onPollTick(msg pollTickMsg) tea.Cmd {
-	if msg.gen != a.pollGen || a.selectedPR == nil {
+	if msg.gen != a.pollGen || a.session.selectedPR == nil {
 		return nil
 	}
-	pr := *a.selectedPR
+	pr := *a.session.selectedPR
 	changed := false
 
-	if a.activeView == viewDiff && a.selectedFile != "" {
-		newMarks := a.brain.HunkMarks(pr.Repo, pr.Number, a.selectedFile)
+	if a.activeView == viewDiff && a.session.selectedFile != "" {
+		newMarks := a.brain.HunkMarks(pr.Repo, pr.Number, a.session.selectedFile)
 		if !reflect.DeepEqual(newMarks, a.diff.marks) {
 			a.diff.marks = newMarks
 			changed = true
 		}
-		newNotes := a.brain.NotesForFile(pr.Repo, pr.Number, a.selectedFile)
+		newNotes := a.brain.NotesForFile(pr.Repo, pr.Number, a.session.selectedFile)
 		if !reflect.DeepEqual(newNotes, a.diff.notes) {
 			a.diff.notes = newNotes
 			changed = true

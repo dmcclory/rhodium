@@ -96,7 +96,7 @@ func (v *filesView) bindings(a *app) []Binding {
 			Desc: "back", Group: "Navigate",
 			Action: func(a *app) tea.Cmd {
 				v.tab = tabFiles
-				if a.listViewOrigin == viewTodo {
+				if a.session.listOrigin == viewTodo {
 					a.activeView = viewTodo
 				} else {
 					a.activeView = viewPRs
@@ -135,7 +135,7 @@ func (v *filesView) bindings(a *app) []Binding {
 			Name: "comments", Keys: []string{"C"},
 			Desc: "view PR comments", Group: "View",
 			Action: func(a *app) tea.Cmd {
-				if a.selectedPR == nil {
+				if a.session.selectedPR == nil {
 					return nil
 				}
 				return a.openComments(viewFiles)
@@ -157,21 +157,21 @@ func (v *filesView) delegate(msg tea.Msg) tea.Cmd {
 }
 
 func (v *filesView) rebuild(a *app) {
-	if a.selectedPR == nil {
+	if a.session.selectedPR == nil {
 		return
 	}
 	var savedPath string
 	if sel, ok := v.list.SelectedItem().(fileItem); ok {
 		savedPath = sel.fc.Path
 	}
-	files := a.cache.prFiles[brain.PRKey(a.selectedPR.Repo, a.selectedPR.Number)]
-	reviewedStates := a.brain.AllFileReviewedStates(a.selectedPR.Repo, a.selectedPR.Number)
+	files := a.cache.prFiles[brain.PRKey(a.session.selectedPR.Repo, a.session.selectedPR.Number)]
+	reviewedStates := a.brain.AllFileReviewedStates(a.session.selectedPR.Repo, a.session.selectedPR.Number)
 	var unseen, partial, seen []fileItem
 	for _, fc := range files {
-		status := a.brain.Status(a.selectedPR.Repo, a.selectedPR.Number, fc)
-		nc := a.brain.NoteCountForFile(a.selectedPR.Repo, a.selectedPR.Number, fc.Path)
+		status := a.brain.Status(a.session.selectedPR.Repo, a.session.selectedPR.Number, fc)
+		nc := a.brain.NoteCountForFile(a.session.selectedPR.Repo, a.session.selectedPR.Number, fc.Path)
 		s := reviewedStates[fc.Path]
-		catchUp := s.HeadSHA != "" && (s.HeadSHA != a.selectedPR.HeadSHA || s.BaseSHA != a.selectedPR.BaseSHA)
+		catchUp := s.HeadSHA != "" && (s.HeadSHA != a.session.selectedPR.HeadSHA || s.BaseSHA != a.session.selectedPR.BaseSHA)
 		fi := fileItem{fc: fc, status: status, noteCount: nc, needsCatchUp: catchUp}
 		switch status {
 		case brain.StatusUnseen:
@@ -245,31 +245,31 @@ func (v *filesView) tabBar() string {
 
 // rebuildDescVP populates the always-visible description pane.
 func (v *filesView) rebuildDescVP(a *app) {
-	if a.selectedPR == nil {
+	if a.session.selectedPR == nil {
 		return
 	}
-	body := a.selectedPR.Body
+	body := a.session.selectedPR.Body
 	if body == "" {
 		body = "(no description)"
 	}
 	content := fmt.Sprintf("%s#%d  %s  @%s\n\n%s",
-		a.selectedPR.Repo, a.selectedPR.Number, a.selectedPR.Title, a.selectedPR.Author, body)
+		a.session.selectedPR.Repo, a.session.selectedPR.Number, a.session.selectedPR.Title, a.session.selectedPR.Author, body)
 	v.descVP.SetContent(content)
 	v.descVP.GotoTop()
 }
 
 func (v *filesView) rebuildInfoVP(a *app) {
-	if a.selectedPR == nil {
+	if a.session.selectedPR == nil {
 		return
 	}
 	var content string
 	switch v.tab {
 	case tabNotes:
-		notes := a.brain.NotesForPR(a.selectedPR.Repo, a.selectedPR.Number, brain.NotesActive)
+		notes := a.brain.NotesForPR(a.session.selectedPR.Repo, a.session.selectedPR.Number, brain.NotesActive)
 		if len(notes) == 0 {
 			content = "(no notes)"
 		} else {
-			key := brain.PRKey(a.selectedPR.Repo, a.selectedPR.Number)
+			key := brain.PRKey(a.session.selectedPR.Repo, a.session.selectedPR.Number)
 			fileLinesCache := map[string][]string{}
 			getFileLines := func(path string) []string {
 				if cached, ok := fileLinesCache[path]; ok {
