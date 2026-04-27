@@ -1,6 +1,8 @@
 package rhodium
 
 import (
+	"rhodium/internal/diff"
+
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -67,5 +69,5 @@ func shortSHA(s string) string {
 // hashLine wraps a single string as a single-line "+"-prefixed hunk body
 // and runs it through the hunk hasher. Used for note line anchoring.
 func hashLine(s string) string {
-	return hashHunkBody([]string{"+" + s})
+	return diff.HashHunkBody([]string{"+" + s})
 }

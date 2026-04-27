@@ -1,5 +1,7 @@
 package rhodium
 
+import "rhodium/internal/diff"
+
 // advanceReason is why a file qualifies (or doesn't) for implicit auto-advance
 // when the reviewer re-enters a PR whose head or base has moved. Pure logic
 // lives in decideAdvance so the rev-update probe can be unit-tested without
@@ -26,7 +28,7 @@ func (r advanceReason) advances() bool {
 // shortcut alone. An empty newContent is treated the same way — we refuse to
 // call two empty strings a match, because "file missing at both refs" is a
 // delete/forget case the caller should handle explicitly, not us.
-func decideAdvance(hunks []Hunk, marks map[string]bool, oldContent, newContent string) advanceReason {
+func decideAdvance(hunks []diff.Hunk, marks map[string]bool, oldContent, newContent string) advanceReason {
 	if len(hunks) == 0 {
 		return advanceNoHunks
 	}

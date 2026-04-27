@@ -1,6 +1,9 @@
 package rhodium
 
-import "rhodium/internal/gh"
+import (
+	"rhodium/internal/diff"
+	"rhodium/internal/gh"
+)
 
 // tea.Msg types used by the TUI. Grouped here (rather than next to the
 // handlers) so it's easy to see the full set of async events the update
@@ -37,10 +40,10 @@ type catchUpLoadedMsg struct {
 
 type diamondClassifiedMsg struct {
 	path    string
-	class   Class   // top-level class, for status line
-	diamond Diamond // four corners, kept for segment rendering
-	result  *Result // slow-path segmentation; nil if classification failed
-	patch   string  // whole-file delta patch, only filled for ShownAsDiff2 top-level
+	class   diff.Class   // top-level class, for status line
+	diamond diff.Diamond // four corners, kept for segment rendering
+	result  *diff.Result // slow-path segmentation; nil if classification failed
+	patch   string       // whole-file delta patch, only filled for ShownAsDiff2 top-level
 	err     error
 }
 

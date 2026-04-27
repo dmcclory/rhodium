@@ -2,6 +2,7 @@ package rhodium
 
 import (
 	"fmt"
+	"rhodium/internal/diff"
 	"rhodium/internal/gh"
 	"strings"
 
@@ -333,7 +334,7 @@ func patchNewFileLines(a *app, key, path string) []string {
 	if patch == "" {
 		return nil
 	}
-	hunks := parseHunks(patch)
+	hunks := diff.ParseHunks(patch)
 	maxLine := 0
 	for _, h := range hunks {
 		r := parseHunkRange(h.Header)

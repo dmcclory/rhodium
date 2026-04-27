@@ -1,6 +1,7 @@
 package rhodium
 
 import (
+	"rhodium/internal/diff"
 	"rhodium/internal/gh"
 	"testing"
 )
@@ -15,7 +16,7 @@ import (
 // subset of hunk indices. Lets tests express "reviewer marked the first
 // hunk but not the second" without copy-pasting hash strings.
 func makeMarksFromPatch(path, patch string, markedIdx ...int) map[string]map[string]bool {
-	hunks := parseHunks(patch)
+	hunks := diff.ParseHunks(patch)
 	want := map[int]bool{}
 	if len(markedIdx) == 0 {
 		for i := range hunks {

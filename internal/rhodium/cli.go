@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"rhodium/internal/diff"
 	"rhodium/internal/gh"
 	"sort"
 	"strconv"
@@ -624,7 +625,7 @@ func cmdState(args []string) error {
 
 	for _, fc := range files {
 		marks := brain.HunkMarks(repo, num, fc.Path)
-		hunks := parseHunks(fc.Patch)
+		hunks := diff.ParseHunks(fc.Patch)
 		sh := make([]stateHunk, 0, len(hunks))
 		for _, h := range hunks {
 			oldL, newL := hunkLines(h.Header)
@@ -798,7 +799,7 @@ func overlayCommitStatus(c gh.Commit, files []gh.FileChange, marksByPath map[str
 		Message: c.Message,
 	}
 	for _, f := range files {
-		hunks := parseHunks(f.Patch)
+		hunks := diff.ParseHunks(f.Patch)
 		if len(hunks) == 0 {
 			continue
 		}

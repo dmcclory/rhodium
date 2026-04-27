@@ -1,6 +1,6 @@
 bin/
-rhodium
-rhodium2
+/rhodium
+/rhodium2
 
 # editor
 .vscode/

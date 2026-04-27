@@ -1,4 +1,4 @@
-package rhodium
+package diff
 
 import (
 	"fmt"
@@ -6,7 +6,7 @@ import (
 
 // diff2Hunks produces unified-diff-style hunks between two content strings,
 // using PatienceMatches for the line alignment. Output is a slice of Hunk
-// values with the same shape as parseHunks: an `@@ -a,b +c,d @@` header,
+// values with the same shape as ParseHunks: an `@@ -a,b +c,d @@` header,
 // BodyLines with leading ' ' / '-' / '+', and a Hash keyed off the +/- lines.
 //
 // This is the slow-path's per-segment renderer. It is NOT byte-identical to
@@ -98,10 +98,10 @@ func groupChangeWindows(ops []diffOp, ctx int) []changeWindow {
 	return windows
 }
 
-// maxSegmentViews is the largest Views() count across the given segments.
+// MaxSegmentViews is the largest Views() count across the given segments.
 // Used to decide whether to advertise `v: cycle view` in the footer — there's
 // nothing to cycle if every segment has a single view.
-func maxSegmentViews(segments []Segment) int {
+func MaxSegmentViews(segments []Segment) int {
 	max := 0
 	for _, seg := range segments {
 		if n := len(seg.Class.Views()); n > max {
@@ -111,12 +111,12 @@ func maxSegmentViews(segments []Segment) int {
 	return max
 }
 
-// segmentHunks renders each segment under the given per-segment view choice
+// SegmentHunks renders each segment under the given per-segment view choice
 // into a flat hunk list: a synthetic header hunk (Hash=="", unmarkable) that
 // labels the segment, followed by the diff2Hunks of that segment's corners.
 // viewIdx is the global alt-view cycle (phase 2 cycles it); each segment
 // uses Views()[viewIdx % len(Views())].
-func segmentHunks(segments []Segment, viewIdx int) []Hunk {
+func SegmentHunks(segments []Segment, viewIdx int) []Hunk {
 	var hunks []Hunk
 	n := len(segments)
 	for i, seg := range segments {
@@ -171,7 +171,7 @@ func opsToHunks(ops []diffOp, windows []changeWindow) []Hunk {
 		hunks = append(hunks, Hunk{
 			Header:    header,
 			BodyLines: body,
-			Hash:      hashHunkBody(body),
+			Hash:      HashHunkBody(body),
 		})
 	}
 	return hunks

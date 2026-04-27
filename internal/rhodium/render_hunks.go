@@ -1,89 +1,15 @@
 package rhodium
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"regexp"
+	"rhodium/internal/diff"
 	"rhodium/internal/gh"
 	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 )
-
-type Hunk struct {
-	Header    string   // the @@ -a,b +c,d @@ line, verbatim
-	BodyLines []string // lines after the header, up to the next hunk
-	Hash      string   // content hash of the +/- lines only
-}
-
-// isMarkable distinguishes real diff hunks (hashed +/- content the reviewer
-// can tick off) from synthetic segment-header hunks (Hash==""), which only
-// exist to render a boundary label between the real hunks of a segmented
-// slow-path view.
-func (h Hunk) isMarkable() bool { return h.Hash != "" }
-
-var hunkHeaderRE = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@`)
-
-// parseHunks splits a unified-diff patch into hunks. File header lines
-// above the first `@@` (diff --git, ---, +++) are dropped — only hunks
-// themselves are review-markable units.
-func parseHunks(patch string) []Hunk {
-	if patch == "" {
-		return nil
-	}
-	lines := strings.Split(patch, "\n")
-	var hunks []Hunk
-	var cur *Hunk
-	flush := func() {
-		if cur == nil {
-			return
-		}
-		cur.Hash = hashHunkBody(cur.BodyLines)
-		hunks = append(hunks, *cur)
-		cur = nil
-	}
-	for _, line := range lines {
-		if hunkHeaderRE.MatchString(line) {
-			flush()
-			cur = &Hunk{Header: line}
-			continue
-		}
-		if cur != nil {
-			cur.BodyLines = append(cur.BodyLines, line)
-		}
-	}
-	flush()
-	// The last hunk often has a trailing empty string from the final newline.
-	// Trim it so hashing is stable across trailing-newline variations.
-	for i := range hunks {
-		body := hunks[i].BodyLines
-		if len(body) > 0 && body[len(body)-1] == "" {
-			hunks[i].BodyLines = body[:len(body)-1]
-			hunks[i].Hash = hashHunkBody(hunks[i].BodyLines)
-		}
-	}
-	return hunks
-}
-
-// hashHunkBody hashes only the +/- lines of a hunk. Context shifts (e.g., an
-// unrelated insertion earlier in the file) don't change the hash, so marks
-// survive rebases and amends that don't touch this region.
-func hashHunkBody(lines []string) string {
-	var kept []string
-	for _, line := range lines {
-		if len(line) == 0 {
-			continue
-		}
-		switch line[0] {
-		case '+', '-':
-			kept = append(kept, line)
-		}
-	}
-	sum := sha256.Sum256([]byte(strings.Join(kept, "\n")))
-	return hex.EncodeToString(sum[:])[:16]
-}
 
 var (
 	focusedHunkStyle = lipgloss.NewStyle().Reverse(true).Bold(true)
@@ -132,9 +58,9 @@ func renderNoteLines(b *strings.Builder, notes []Note, lineNum *int, lineMap *[]
 	for _, n := range notes {
 		lines := strings.Split(n.Body, "\n")
 		for i, line := range lines {
-			prefix := "  \u2503 "
+			prefix := "  ┃ "
 			if i == 0 {
-				prefix = "  \u2503 RH: "
+				prefix = "  ┃ RH: "
 			}
 			rendered := prefix + line
 			if i == len(lines)-1 && n.GitHubCommentID != 0 {
@@ -192,7 +118,7 @@ func parseHunkRange(header string) hunkRange {
 // header so you can see what `space` / `up` / `down` will act on. Returns
 // the rendered body and a parallel slice with each hunk's header line offset
 // for SetYOffset-based navigation.
-func renderHunks(hunks []Hunk, marks map[string]bool, focusedIdx int, notes []Note, ghInline []gh.Comment, cursorLine int) (string, []int, []int) {
+func renderHunks(hunks []diff.Hunk, marks map[string]bool, focusedIdx int, notes []Note, ghInline []gh.Comment, cursorLine int) (string, []int, []int) {
 	byLine := notesByLine(notes)
 	ghByLine := ghInlineByLine(ghInline, notes)
 	var b strings.Builder
@@ -264,8 +190,8 @@ func colorDiffLine(line string) string {
 
 // renderFullFile produces a full-file view with diff lines colored inline.
 // Unchanged lines show with line numbers; additions are green, deletions red.
-// Hunk headers with mark indicators are shown at each change boundary.
-func renderFullFile(fileContent string, hunks []Hunk, marks map[string]bool, focusedIdx int, notes []Note, ghInline []gh.Comment, cursorLine int) (string, []int, []int) {
+// diff.Hunk headers with mark indicators are shown at each change boundary.
+func renderFullFile(fileContent string, hunks []diff.Hunk, marks map[string]bool, focusedIdx int, notes []Note, ghInline []gh.Comment, cursorLine int) (string, []int, []int) {
 	byLine := notesByLine(notes)
 	ghByLine := ghInlineByLine(ghInline, notes)
 	fileLines := strings.Split(fileContent, "\n")
@@ -274,7 +200,7 @@ func renderFullFile(fileContent string, hunks []Hunk, marks map[string]bool, foc
 	}
 
 	type parsedHunk struct {
-		Hunk
+		diff.Hunk
 		r hunkRange
 	}
 	parsed := make([]parsedHunk, len(hunks))

@@ -1,4 +1,4 @@
-package rhodium
+package diff
 
 // diff4 implements the M1 (fast-path) classifier for Iron-style 4-way diffs.
 //

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"rhodium/internal/diff"
 	"rhodium/internal/gh"
 	"strconv"
 	"strings"
@@ -1250,7 +1251,7 @@ func (b *Brain) DeleteNote(id int64) error {
 }
 
 func (b *Brain) Status(repo string, pr int, fc gh.FileChange) FileStatus {
-	hunks := parseHunks(fc.Patch)
+	hunks := diff.ParseHunks(fc.Patch)
 	if len(hunks) == 0 {
 		return StatusSeen
 	}

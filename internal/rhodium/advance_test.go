@@ -2,15 +2,16 @@ package rhodium
 
 import (
 	"path/filepath"
+	"rhodium/internal/diff"
 	"rhodium/internal/gh"
 	"testing"
 )
 
 func TestDecideAdvance(t *testing.T) {
-	// Two hunks with deterministic hashes from hashHunkBody.
-	h1 := Hunk{Header: "@@ -1,2 +1,3 @@", BodyLines: []string{"+alpha"}, Hash: hashHunkBody([]string{"+alpha"})}
-	h2 := Hunk{Header: "@@ -10,1 +11,2 @@", BodyLines: []string{"+beta"}, Hash: hashHunkBody([]string{"+beta"})}
-	hunks := []Hunk{h1, h2}
+	// Two hunks with deterministic hashes from diff.HashHunkBody.
+	h1 := diff.Hunk{Header: "@@ -1,2 +1,3 @@", BodyLines: []string{"+alpha"}, Hash: diff.HashHunkBody([]string{"+alpha"})}
+	h2 := diff.Hunk{Header: "@@ -10,1 +11,2 @@", BodyLines: []string{"+beta"}, Hash: diff.HashHunkBody([]string{"+beta"})}
+	hunks := []diff.Hunk{h1, h2}
 
 	t.Run("no hunks", func(t *testing.T) {
 		if got := decideAdvance(nil, nil, "x", "y"); got != advanceNoHunks {
@@ -88,7 +89,7 @@ func TestProbeAdvanceLocalOnly(t *testing.T) {
 
 	// fcMarked: two hunks, both ticked off in the brain.
 	fcMarked := gh.FileChange{Path: "src/main.go", Patch: samplePatch}
-	hunks := parseHunks(samplePatch)
+	hunks := diff.ParseHunks(samplePatch)
 	marks := map[string]bool{hunks[0].Hash: true, hunks[1].Hash: true}
 	if err := b.SetHunkMarks(pr.Repo, pr.Number, fcMarked.Path, marks); err != nil {
 		t.Fatal(err)

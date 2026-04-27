@@ -2,6 +2,7 @@ package rhodium
 
 import (
 	"fmt"
+	"rhodium/internal/diff"
 	"rhodium/internal/gh"
 	"sync"
 
@@ -159,7 +160,7 @@ func probeAdvance(brain *Brain, pr gh.PR, drifted []gh.FileChange, states map[st
 	// First pass: resolve everything that doesn't need a fetch.
 	var needsFetch []gh.FileChange
 	for _, fc := range drifted {
-		hunks := parseHunks(fc.Patch)
+		hunks := diff.ParseHunks(fc.Patch)
 		marks := brain.HunkMarks(pr.Repo, pr.Number, fc.Path)
 		// Call decideAdvance with empty content — if it returns anything
 		// other than advanceNone, we don't need the fetch at all.
@@ -195,7 +196,7 @@ func probeAdvance(brain *Brain, pr gh.PR, drifted []gh.FileChange, states map[st
 				}
 				f1, _ := gh.FetchFileAtRef(pr.Repo, fc.Path, s.HeadSHA)
 
-				hunks := parseHunks(fc.Patch)
+				hunks := diff.ParseHunks(fc.Patch)
 				marks := brain.HunkMarks(pr.Repo, pr.Number, fc.Path)
 				r := decideAdvance(hunks, marks, f1, f2)
 				mu.Lock()

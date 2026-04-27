@@ -3,6 +3,7 @@ package rhodium
 import (
 	"encoding/json"
 	"path/filepath"
+	"rhodium/internal/diff"
 	"rhodium/internal/gh"
 	"testing"
 )
@@ -29,7 +30,7 @@ func TestBrainHunkMarks(t *testing.T) {
 	defer b.Close()
 
 	fc := gh.FileChange{Path: "src/main.go", Patch: samplePatch}
-	hunks := parseHunks(samplePatch)
+	hunks := diff.ParseHunks(samplePatch)
 	if len(hunks) != 2 {
 		t.Fatalf("expected 2 hunks, got %d", len(hunks))
 	}
@@ -409,7 +410,7 @@ func TestBrainEventsMarks(t *testing.T) {
 	}
 	defer b.Close()
 
-	hunks := parseHunks(samplePatch)
+	hunks := diff.ParseHunks(samplePatch)
 	h0, h1 := hunks[0].Hash, hunks[1].Hash
 
 	// First write: both hunks turning on → two mark.set, zero mark.clear.
