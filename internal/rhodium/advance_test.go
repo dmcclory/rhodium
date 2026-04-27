@@ -2,10 +2,22 @@ package rhodium
 
 import (
 	"path/filepath"
+	"rhodium/internal/brain"
 	"rhodium/internal/diff"
 	"rhodium/internal/gh"
 	"testing"
 )
+
+const samplePatch = `@@ -1,3 +1,4 @@
+ context
+-old line
++new line
++extra
+@@ -10,2 +11,2 @@
+ more ctx
+-gone
++added
+`
 
 func TestDecideAdvance(t *testing.T) {
 	// Two hunks with deterministic hashes from diff.HashHunkBody.
@@ -75,7 +87,7 @@ func TestProbeAdvanceLocalOnly(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("RHODIUM_BRAIN", filepath.Join(dir, "brain.db"))
 
-	b, err := LoadBrain()
+	b, err := brain.LoadBrain()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +107,7 @@ func TestProbeAdvanceLocalOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	states := map[string]FileReviewState{
+	states := map[string]brain.FileReviewState{
 		fcEmpty.Path:  {HeadSHA: "oldhead", BaseSHA: "oldbase"},
 		fcMarked.Path: {HeadSHA: "oldhead", BaseSHA: "oldbase"},
 	}

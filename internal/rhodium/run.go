@@ -3,6 +3,7 @@ package rhodium
 import (
 	"fmt"
 	"os"
+	"rhodium/internal/brain"
 	"rhodium/internal/gh"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -24,11 +25,11 @@ func Run(args []string) error {
 			fmt.Fprintln(os.Stderr, "warning: could not detect GitHub user — set `github_user` in config to split your PRs:", err)
 		}
 	}
-	brain, err := LoadBrain()
+	b, err := brain.LoadBrain()
 	if err != nil {
 		return err
 	}
-	p := tea.NewProgram(newApp(cfg, brain), tea.WithAltScreen())
+	p := tea.NewProgram(newApp(cfg, b), tea.WithAltScreen())
 	program = p
 	if _, err := p.Run(); err != nil {
 		return err

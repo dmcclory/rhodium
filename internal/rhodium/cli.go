@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"rhodium/internal/brain"
 	"rhodium/internal/diff"
 	"rhodium/internal/gh"
 	"sort"
@@ -120,7 +121,7 @@ func cmdBrainStatus(args []string) error {
 	if err := fs.Parse(flags); err != nil {
 		return err
 	}
-	status, err := InspectBrain()
+	status, err := brain.InspectBrain()
 	if err != nil {
 		return err
 	}
@@ -198,22 +199,22 @@ func cmdBrainLog(args []string) error {
 		return err
 	}
 
-	filter := EventFilter{KindPrefix: *kind, Limit: *limit}
+	filter := brain.EventFilter{KindPrefix: *kind, Limit: *limit}
 	if *prRef != "" {
 		repo, num, err := parsePRRef(*prRef)
 		if err != nil {
 			return err
 		}
-		filter.PRKey = prKey(repo, num)
+		filter.PRKey = brain.PRKey(repo, num)
 	}
 
-	brain, err := LoadBrain()
+	b, err := brain.LoadBrain()
 	if err != nil {
 		return err
 	}
-	defer brain.Close()
+	defer b.Close()
 
-	events := brain.RecentEvents(filter)
+	events := b.RecentEvents(filter)
 
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)
@@ -280,17 +281,17 @@ func cmdNotes(args []string) error {
 	if err != nil {
 		return err
 	}
-	brain, err := LoadBrain()
+	b, err := brain.LoadBrain()
 	if err != nil {
 		return err
 	}
-	defer brain.Close()
+	defer b.Close()
 
-	filter := NotesActive
+	filter := brain.NotesActive
 	if *all {
-		filter = NotesAll
+		filter = brain.NotesAll
 	}
-	notes := brain.NotesForPR(repo, num, filter)
+	notes := b.NotesForPR(repo, num, filter)
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -298,10 +299,10 @@ func cmdNotes(args []string) error {
 	}
 
 	if len(notes) == 0 {
-		fmt.Printf("%s — no notes\n", prKey(repo, num))
+		fmt.Printf("%s — no notes\n", brain.PRKey(repo, num))
 		return nil
 	}
-	fmt.Printf("%s — %d %s\n\n", prKey(repo, num), len(notes), pluralize("note", len(notes)))
+	fmt.Printf("%s — %d %s\n\n", brain.PRKey(repo, num), len(notes), pluralize("note", len(notes)))
 	var curPath string
 	for _, n := range notes {
 		if n.Path != curPath {
@@ -329,18 +330,18 @@ func cmdResolve(args []string) error {
 	if len(pos) == 0 {
 		return fmt.Errorf("usage: rhodium resolve <note-id>...")
 	}
-	brain, err := LoadBrain()
+	b, err := brain.LoadBrain()
 	if err != nil {
 		return err
 	}
-	defer brain.Close()
+	defer b.Close()
 
 	for _, s := range pos {
 		id, err := strconv.ParseInt(s, 10, 64)
 		if err != nil {
 			return fmt.Errorf("note id must be an integer: %q", s)
 		}
-		if err := brain.ResolveNote(id); err != nil {
+		if err := b.ResolveNote(id); err != nil {
 			return fmt.Errorf("resolve #%d: %w", id, err)
 		}
 		fmt.Printf("resolved #%d\n", id)
@@ -377,11 +378,11 @@ func cmdTodo(args []string) error {
 		return err
 	}
 
-	brain, err := LoadBrain()
+	b, err := brain.LoadBrain()
 	if err != nil {
 		return err
 	}
-	defer brain.Close()
+	defer b.Close()
 
 	if *sync {
 		cfg, err := loadConfig()
@@ -397,19 +398,19 @@ func cmdTodo(args []string) error {
 			}
 			all = append(all, prs...)
 		}
-		if err := brain.SetPRCache(all); err != nil {
+		if err := b.SetPRCache(all); err != nil {
 			return fmt.Errorf("write cache: %w", err)
 		}
 	}
 
-	cached := brain.CachedPRs()
+	cached := b.CachedPRs()
 	byKey := map[string]gh.PR{}
 	for _, p := range cached {
-		byKey[prKey(p.Repo, p.Number)] = p
+		byKey[brain.PRKey(p.Repo, p.Number)] = p
 	}
 
-	catchUps := map[string]*ReviewSession{}
-	sessions := brain.AllActiveSessions()
+	catchUps := map[string]*brain.ReviewSession{}
+	sessions := b.AllActiveSessions()
 	for i := range sessions {
 		catchUps[sessions[i].PRKey] = &sessions[i]
 	}
@@ -424,7 +425,7 @@ func cmdTodo(args []string) error {
 	for k := range catchUps {
 		keys[k] = true
 	}
-	for _, k := range brain.PRKeysWithNotes() {
+	for _, k := range b.PRKeysWithNotes() {
 		keys[k] = true
 	}
 
@@ -434,10 +435,10 @@ func cmdTodo(args []string) error {
 		if err != nil {
 			continue
 		}
-		notes := brain.NoteCountForPR(repo, num)
+		notes := b.NoteCountForPR(repo, num)
 		cu := catchUps[key]
 		_, inCache := byKey[key]
-		reviewed := len(brain.AllFileReviewedStates(repo, num)) > 0 || brain.HasAnyMarks(repo, num)
+		reviewed := len(b.AllFileReviewedStates(repo, num)) > 0 || b.HasAnyMarks(repo, num)
 
 		var tags []string
 		if cu != nil {
@@ -542,7 +543,7 @@ type stateFile struct {
 	Deletions int         `json:"deletions"`
 	Patch     string      `json:"patch"`
 	Hunks     []stateHunk `json:"hunks"`
-	Notes     []Note      `json:"notes"`
+	Notes     []brain.Note `json:"notes"`
 }
 
 type stateOutput struct {
@@ -556,11 +557,11 @@ type stateOutput struct {
 	Files   []stateFile `json:"files"`
 }
 
-func statusName(s FileStatus) string {
+func statusName(s brain.FileStatus) string {
 	switch s {
-	case StatusSeen:
+	case brain.StatusSeen:
 		return "seen"
-	case StatusPartial:
+	case brain.StatusPartial:
 		return "partial"
 	default:
 		return "unseen"
@@ -597,11 +598,11 @@ func cmdState(args []string) error {
 		return err
 	}
 
-	brain, err := LoadBrain()
+	b, err := brain.LoadBrain()
 	if err != nil {
 		return err
 	}
-	defer brain.Close()
+	defer b.Close()
 
 	files, err := gh.ListPRFiles(repo, num)
 	if err != nil {
@@ -609,11 +610,11 @@ func cmdState(args []string) error {
 	}
 
 	out := stateOutput{
-		Key:    prKey(repo, num),
+		Key:    brain.PRKey(repo, num),
 		Repo:   repo,
 		Number: num,
 	}
-	for _, p := range brain.CachedPRs() {
+	for _, p := range b.CachedPRs() {
 		if p.Repo == repo && p.Number == num {
 			out.Title = p.Title
 			out.Author = p.Author
@@ -624,7 +625,7 @@ func cmdState(args []string) error {
 	}
 
 	for _, fc := range files {
-		marks := brain.HunkMarks(repo, num, fc.Path)
+		marks := b.HunkMarks(repo, num, fc.Path)
 		hunks := diff.ParseHunks(fc.Patch)
 		sh := make([]stateHunk, 0, len(hunks))
 		for _, h := range hunks {
@@ -639,12 +640,12 @@ func cmdState(args []string) error {
 		}
 		out.Files = append(out.Files, stateFile{
 			Path:      fc.Path,
-			Status:    statusName(brain.Status(repo, num, fc)),
+			Status:    statusName(b.Status(repo, num, fc)),
 			Additions: fc.Additions,
 			Deletions: fc.Deletions,
 			Patch:     fc.Patch,
 			Hunks:     sh,
-			Notes:     brain.NotesForFile(repo, num, fc.Path),
+			Notes:     b.NotesForFile(repo, num, fc.Path),
 		})
 	}
 
@@ -669,27 +670,27 @@ func cmdMark(args []string, on bool) error {
 	}
 	path, hash := pos[1], pos[2]
 
-	brain, err := LoadBrain()
+	b, err := brain.LoadBrain()
 	if err != nil {
 		return err
 	}
-	defer brain.Close()
+	defer b.Close()
 
-	marks := brain.HunkMarks(repo, num, path)
+	marks := b.HunkMarks(repo, num, path)
 	if on {
 		marks[hash] = true
 	} else {
 		delete(marks, hash)
 	}
-	if err := brain.SetHunkMarks(repo, num, path, marks); err != nil {
+	if err := b.SetHunkMarks(repo, num, path, marks); err != nil {
 		return err
 	}
 
 	// Record the head/base SHAs the reviewer is looking at, so catch-up works
 	// consistently whether the mark came from the TUI or nvim.
-	for _, p := range brain.CachedPRs() {
+	for _, p := range b.CachedPRs() {
 		if p.Repo == repo && p.Number == num {
-			_ = brain.SetFileReviewed(repo, num, path, p.HeadSHA, p.BaseSHA)
+			_ = b.SetFileReviewed(repo, num, path, p.HeadSHA, p.BaseSHA)
 			break
 		}
 	}
@@ -725,17 +726,17 @@ func cmdNote(args []string) error {
 		return fmt.Errorf("empty note body")
 	}
 
-	brain, err := LoadBrain()
+	b, err := brain.LoadBrain()
 	if err != nil {
 		return err
 	}
-	defer brain.Close()
+	defer b.Close()
 
 	// Compute line hash from the file at head. If we can't fetch (e.g. offline,
 	// new file), fall back to an empty hash — note is still anchored by line
 	// number and the drift detector will warn later.
 	var lineHash string
-	for _, p := range brain.CachedPRs() {
+	for _, p := range b.CachedPRs() {
 		if p.Repo == repo && p.Number == num {
 			if content, err := gh.FetchFileAtRef(repo, path, p.HeadSHA); err == nil && content != "" {
 				lines := strings.Split(content, "\n")
@@ -746,7 +747,7 @@ func cmdNote(args []string) error {
 			break
 		}
 	}
-	return brain.SaveNote(repo, num, path, lineNo, lineHash, body)
+	return b.SaveNote(repo, num, path, lineNo, lineHash, body)
 }
 
 // --- rhodium log: per-commit review overlay -------------------------------
@@ -857,11 +858,11 @@ func cmdLog(args []string) error {
 		return err
 	}
 
-	brain, err := LoadBrain()
+	b, err := brain.LoadBrain()
 	if err != nil {
 		return err
 	}
-	defer brain.Close()
+	defer b.Close()
 
 	commits, err := gh.ListPRCommits(repo, num)
 	if err != nil {
@@ -880,7 +881,7 @@ func cmdLog(args []string) error {
 	}
 	marksByPath := make(map[string]map[string]bool, len(prFiles))
 	for _, f := range prFiles {
-		marksByPath[f.Path] = brain.HunkMarks(repo, num, f.Path)
+		marksByPath[f.Path] = b.HunkMarks(repo, num, f.Path)
 	}
 
 	// Fetch per-commit files in input order, overlay each. A parallel fan-out
@@ -906,7 +907,7 @@ func cmdLog(args []string) error {
 		return enc.Encode(struct {
 			Key     string         `json:"key"`
 			Commits []commitStatus `json:"commits"`
-		}{Key: prKey(repo, num), Commits: statuses})
+		}{Key: brain.PRKey(repo, num), Commits: statuses})
 	}
 
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)

@@ -3,6 +3,7 @@ package rhodium
 import (
 	"fmt"
 	"regexp"
+	"rhodium/internal/brain"
 	"rhodium/internal/diff"
 	"rhodium/internal/gh"
 	"strconv"
@@ -23,8 +24,8 @@ var (
 
 var cursorIndicator = cursorStyle.Render("▸ ")
 
-func notesByLine(notes []Note) map[int][]Note {
-	m := map[int][]Note{}
+func notesByLine(notes []brain.Note) map[int][]brain.Note {
+	m := map[int][]brain.Note{}
 	for _, n := range notes {
 		m[n.LineNo] = append(m[n.LineNo], n)
 	}
@@ -35,7 +36,7 @@ func notesByLine(notes []Note) map[int][]Note {
 // the same key local notes use. Comments whose ID matches a local note's
 // GitHubCommentID are dropped so we don't double-render notes that this
 // reviewer already published themselves.
-func ghInlineByLine(ghs []gh.Comment, notes []Note) map[int][]gh.Comment {
+func ghInlineByLine(ghs []gh.Comment, notes []brain.Note) map[int][]gh.Comment {
 	skip := map[int64]bool{}
 	for _, n := range notes {
 		if n.GitHubCommentID != 0 {
@@ -54,7 +55,7 @@ func ghInlineByLine(ghs []gh.Comment, notes []Note) map[int][]gh.Comment {
 
 var ghCommentStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
 
-func renderNoteLines(b *strings.Builder, notes []Note, lineNum *int, lineMap *[]int) {
+func renderNoteLines(b *strings.Builder, notes []brain.Note, lineNum *int, lineMap *[]int) {
 	for _, n := range notes {
 		lines := strings.Split(n.Body, "\n")
 		for i, line := range lines {
@@ -118,7 +119,7 @@ func parseHunkRange(header string) hunkRange {
 // header so you can see what `space` / `up` / `down` will act on. Returns
 // the rendered body and a parallel slice with each hunk's header line offset
 // for SetYOffset-based navigation.
-func renderHunks(hunks []diff.Hunk, marks map[string]bool, focusedIdx int, notes []Note, ghInline []gh.Comment, cursorLine int) (string, []int, []int) {
+func renderHunks(hunks []diff.Hunk, marks map[string]bool, focusedIdx int, notes []brain.Note, ghInline []gh.Comment, cursorLine int) (string, []int, []int) {
 	byLine := notesByLine(notes)
 	ghByLine := ghInlineByLine(ghInline, notes)
 	var b strings.Builder
@@ -191,7 +192,7 @@ func colorDiffLine(line string) string {
 // renderFullFile produces a full-file view with diff lines colored inline.
 // Unchanged lines show with line numbers; additions are green, deletions red.
 // diff.Hunk headers with mark indicators are shown at each change boundary.
-func renderFullFile(fileContent string, hunks []diff.Hunk, marks map[string]bool, focusedIdx int, notes []Note, ghInline []gh.Comment, cursorLine int) (string, []int, []int) {
+func renderFullFile(fileContent string, hunks []diff.Hunk, marks map[string]bool, focusedIdx int, notes []brain.Note, ghInline []gh.Comment, cursorLine int) (string, []int, []int) {
 	byLine := notesByLine(notes)
 	ghByLine := ghInlineByLine(ghInline, notes)
 	fileLines := strings.Split(fileContent, "\n")

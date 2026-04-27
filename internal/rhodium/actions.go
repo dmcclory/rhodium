@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"rhodium/internal/brain"
 	"rhodium/internal/gh"
 	"strings"
 
@@ -25,7 +26,7 @@ func runAction(a *app, action Action) (tea.Cmd, error) {
 		return nil, fmt.Errorf("no PR selected")
 	}
 	pr := *a.selectedPR
-	files := a.prFiles[prKey(pr.Repo, pr.Number)]
+	files := a.prFiles[brain.PRKey(pr.Repo, pr.Number)]
 
 	agent := a.cfg.DefaultAgentResolved()
 	if agent.Command == "" {
@@ -89,7 +90,7 @@ func runInteractiveAction(a *app, action Action, agent Agent, worktree string, p
 		}), nil
 	}
 
-	label := fmt.Sprintf("%s: %s", action.Name, prKey(pr.Repo, pr.Number))
+	label := fmt.Sprintf("%s: %s", action.Name, brain.PRKey(pr.Repo, pr.Number))
 	a.statusMsg = fmt.Sprintf("launching %s (%s) in tmux pane", agent.Name, action.Name)
 	return func() tea.Msg {
 		paneID, err := spawnTmuxPane(a.cfg.TmuxMode(), worktree, label)
@@ -138,7 +139,7 @@ func runInlineNotesAction(a *app, action Action, agent Agent, pr gh.PR, prompt s
 // shell can read it via `$(cat …)`. Path is deterministic per (PR, action)
 // so repeated presses overwrite instead of piling up.
 func writePromptFile(pr gh.PR, actionName, prompt string) (string, error) {
-	safeKey := strings.ReplaceAll(prKey(pr.Repo, pr.Number), "/", "-")
+	safeKey := strings.ReplaceAll(brain.PRKey(pr.Repo, pr.Number), "/", "-")
 	name := fmt.Sprintf("rhodium-%s-%s.md", safeKey, actionName)
 	path := filepath.Join(os.TempDir(), name)
 	if err := os.WriteFile(path, []byte(prompt), 0o600); err != nil {
@@ -155,7 +156,7 @@ func stashAgentOutput(pr gh.PR, actionName string, stdout, stderr []byte) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return
 	}
-	safeKey := strings.ReplaceAll(prKey(pr.Repo, pr.Number), "/", "-")
+	safeKey := strings.ReplaceAll(brain.PRKey(pr.Repo, pr.Number), "/", "-")
 	base := filepath.Join(dir, fmt.Sprintf("last-%s-%s", actionName, safeKey))
 	os.WriteFile(base+".stdout", stdout, 0o600)
 	os.WriteFile(base+".stderr", stderr, 0o600)

@@ -2,6 +2,7 @@ package rhodium
 
 import (
 	"fmt"
+	"rhodium/internal/brain"
 	"rhodium/internal/diff"
 	"rhodium/internal/gh"
 	"strings"
@@ -21,7 +22,7 @@ type diffView struct {
 
 	hunks      []diff.Hunk
 	marks      map[string]bool
-	notes      []Note
+	notes      []brain.Note
 	ghInline   []gh.Comment // GitHub inline comments scoped to the current file
 	hunkLines  []int
 	lineMap    []int // output line → new-file line number (0 = non-file line)
@@ -344,7 +345,7 @@ func ghInlineForFile(a *app, path string) []gh.Comment {
 	if a.selectedPR == nil {
 		return nil
 	}
-	all := a.prComments[prKey(a.selectedPR.Repo, a.selectedPR.Number)]
+	all := a.prComments[brain.PRKey(a.selectedPR.Repo, a.selectedPR.Number)]
 	var out []gh.Comment
 	for _, c := range all {
 		if c.Type == "inline" && c.Path == path {
@@ -1109,7 +1110,7 @@ func (v *diffView) publishNoteAtCursor(a *app) tea.Cmd {
 		a.statusMsg = "cursor not on a file line"
 		return nil
 	}
-	var target *Note
+	var target *brain.Note
 	for i := range v.notes {
 		n := &v.notes[i]
 		if n.LineNo == lineNo && n.GitHubCommentID == 0 {

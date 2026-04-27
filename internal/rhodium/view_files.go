@@ -2,6 +2,7 @@ package rhodium
 
 import (
 	"fmt"
+	"rhodium/internal/brain"
 	"rhodium/internal/diff"
 	"rhodium/internal/gh"
 	"strings"
@@ -163,7 +164,7 @@ func (v *filesView) rebuild(a *app) {
 	if sel, ok := v.list.SelectedItem().(fileItem); ok {
 		savedPath = sel.fc.Path
 	}
-	files := a.prFiles[prKey(a.selectedPR.Repo, a.selectedPR.Number)]
+	files := a.prFiles[brain.PRKey(a.selectedPR.Repo, a.selectedPR.Number)]
 	reviewedStates := a.brain.AllFileReviewedStates(a.selectedPR.Repo, a.selectedPR.Number)
 	var unseen, partial, seen []fileItem
 	for _, fc := range files {
@@ -173,11 +174,11 @@ func (v *filesView) rebuild(a *app) {
 		catchUp := s.HeadSHA != "" && (s.HeadSHA != a.selectedPR.HeadSHA || s.BaseSHA != a.selectedPR.BaseSHA)
 		fi := fileItem{fc: fc, status: status, noteCount: nc, needsCatchUp: catchUp}
 		switch status {
-		case StatusUnseen:
+		case brain.StatusUnseen:
 			unseen = append(unseen, fi)
-		case StatusPartial:
+		case brain.StatusPartial:
 			partial = append(partial, fi)
-		case StatusSeen:
+		case brain.StatusSeen:
 			seen = append(seen, fi)
 		}
 	}
@@ -264,11 +265,11 @@ func (v *filesView) rebuildInfoVP(a *app) {
 	var content string
 	switch v.tab {
 	case tabNotes:
-		notes := a.brain.NotesForPR(a.selectedPR.Repo, a.selectedPR.Number, NotesActive)
+		notes := a.brain.NotesForPR(a.selectedPR.Repo, a.selectedPR.Number, brain.NotesActive)
 		if len(notes) == 0 {
 			content = "(no notes)"
 		} else {
-			key := prKey(a.selectedPR.Repo, a.selectedPR.Number)
+			key := brain.PRKey(a.selectedPR.Repo, a.selectedPR.Number)
 			fileLinesCache := map[string][]string{}
 			getFileLines := func(path string) []string {
 				if cached, ok := fileLinesCache[path]; ok {
@@ -382,7 +383,7 @@ func patchNewFileLines(a *app, key, path string) []string {
 
 type fileItem struct {
 	fc           gh.FileChange
-	status       FileStatus
+	status       brain.FileStatus
 	noteCount    int
 	needsCatchUp bool // PR head moved since this file was last reviewed
 }

@@ -2,6 +2,7 @@ package rhodium
 
 import (
 	"fmt"
+	"rhodium/internal/brain"
 	"rhodium/internal/diff"
 	"rhodium/internal/gh"
 	"sync"
@@ -53,11 +54,11 @@ func loadCommentsCmd(pr gh.PR) tea.Cmd {
 // update are skipped and left for the per-file flow in view_diff to classify.
 // We also notice "forget" — paths recorded in file_reviews that no longer
 // appear in the current PR files — and silently advance them.
-func autoAdvanceCmd(brain *Brain, pr gh.PR, files []gh.FileChange) tea.Cmd {
+func autoAdvanceCmd(b *brain.Brain, pr gh.PR, files []gh.FileChange) tea.Cmd {
 	return func() tea.Msg {
-		states := brain.AllFileReviewedStates(pr.Repo, pr.Number)
+		states := b.AllFileReviewedStates(pr.Repo, pr.Number)
 		if len(states) == 0 {
-			return autoAdvanceMsg{prKey: prKey(pr.Repo, pr.Number)}
+			return autoAdvanceMsg{prKey: brain.PRKey(pr.Repo, pr.Number)}
 		}
 
 		// Index current files by path for O(1) forget-detection.
@@ -92,7 +93,7 @@ func autoAdvanceCmd(brain *Brain, pr gh.PR, files []gh.FileChange) tea.Cmd {
 		// Probe the drifted bucket. `unresolvedPaths` are the ones that
 		// neither local-marks nor rev-update could advance — these still
 		// need the reviewer and become the session's file list.
-		results := probeAdvance(brain, pr, drifted, states, 4)
+		results := probeAdvance(b, pr, drifted, states, 4)
 		var advanced []string
 		var unresolvedPaths []string
 		for _, fc := range drifted {
@@ -110,7 +111,7 @@ func autoAdvanceCmd(brain *Brain, pr gh.PR, files []gh.FileChange) tea.Cmd {
 		// we're about to silently advance below don't need the reviewer
 		// and aren't part of the session.
 		if len(unresolvedPaths) > 0 {
-			existing := brain.ActiveSession(pr.Repo, pr.Number)
+			existing := b.ActiveSession(pr.Repo, pr.Number)
 			if existing == nil || existing.GoalHead != pr.HeadSHA || existing.GoalBase != pr.BaseSHA {
 				var oldHead, oldBase string
 				for _, s := range states {
@@ -120,32 +121,32 @@ func autoAdvanceCmd(brain *Brain, pr gh.PR, files []gh.FileChange) tea.Cmd {
 						break
 					}
 				}
-				sessionFiles := make([]SessionFile, 0, len(unresolvedPaths))
+				sessionFiles := make([]brain.SessionFile, 0, len(unresolvedPaths))
 				for _, p := range unresolvedPaths {
-					sessionFiles = append(sessionFiles, SessionFile{Path: p})
+					sessionFiles = append(sessionFiles, brain.SessionFile{Path: p})
 				}
-				brain.CreateSession(pr.Repo, pr.Number, oldHead, oldBase, pr.HeadSHA, pr.BaseSHA, sessionFiles)
+				b.CreateSession(pr.Repo, pr.Number, oldHead, oldBase, pr.HeadSHA, pr.BaseSHA, sessionFiles)
 			}
 		}
 
 		// Commit advances. If a silently-advanced path is in the active
 		// session (e.g. a prior session already covered it), mark it done
 		// there too so the counter stays consistent with file_reviews.
-		session := brain.ActiveSession(pr.Repo, pr.Number)
+		session := b.ActiveSession(pr.Repo, pr.Number)
 		sessionPaths := map[string]bool{}
 		if session != nil {
-			for _, sf := range brain.SessionFiles(session.ID) {
+			for _, sf := range b.SessionFiles(session.ID) {
 				sessionPaths[sf.Path] = true
 			}
 		}
 		for _, path := range advanced {
-			brain.SetFileReviewed(pr.Repo, pr.Number, path, pr.HeadSHA, pr.BaseSHA)
+			b.SetFileReviewed(pr.Repo, pr.Number, path, pr.HeadSHA, pr.BaseSHA)
 			if session != nil && sessionPaths[path] {
-				brain.SetSessionFileDone(session.ID, path, true)
+				b.SetSessionFileDone(session.ID, path, true)
 			}
 		}
 
-		return autoAdvanceMsg{prKey: prKey(pr.Repo, pr.Number), advancedFiles: advanced}
+		return autoAdvanceMsg{prKey: brain.PRKey(pr.Repo, pr.Number), advancedFiles: advanced}
 	}
 }
 
@@ -153,7 +154,7 @@ func autoAdvanceCmd(brain *Brain, pr gh.PR, files []gh.FileChange) tea.Cmd {
 // (at the reviewer's last-seen head) only when needed — i.e., when the local
 // mark check didn't already decide. Fetches are parallelized across `workers`
 // goroutines since each is a separate `gh api` round-trip.
-func probeAdvance(brain *Brain, pr gh.PR, drifted []gh.FileChange, states map[string]FileReviewState, workers int) map[string]advanceReason {
+func probeAdvance(b *brain.Brain, pr gh.PR, drifted []gh.FileChange, states map[string]brain.FileReviewState, workers int) map[string]advanceReason {
 	out := make(map[string]advanceReason, len(drifted))
 	var mu sync.Mutex
 
@@ -161,7 +162,7 @@ func probeAdvance(brain *Brain, pr gh.PR, drifted []gh.FileChange, states map[st
 	var needsFetch []gh.FileChange
 	for _, fc := range drifted {
 		hunks := diff.ParseHunks(fc.Patch)
-		marks := brain.HunkMarks(pr.Repo, pr.Number, fc.Path)
+		marks := b.HunkMarks(pr.Repo, pr.Number, fc.Path)
 		// Call decideAdvance with empty content — if it returns anything
 		// other than advanceNone, we don't need the fetch at all.
 		r := decideAdvance(hunks, marks, "", "")
@@ -197,7 +198,7 @@ func probeAdvance(brain *Brain, pr gh.PR, drifted []gh.FileChange, states map[st
 				f1, _ := gh.FetchFileAtRef(pr.Repo, fc.Path, s.HeadSHA)
 
 				hunks := diff.ParseHunks(fc.Patch)
-				marks := brain.HunkMarks(pr.Repo, pr.Number, fc.Path)
+				marks := b.HunkMarks(pr.Repo, pr.Number, fc.Path)
 				r := decideAdvance(hunks, marks, f1, f2)
 				mu.Lock()
 				out[fc.Path] = r

@@ -3,6 +3,7 @@ package rhodium
 import (
 	"fmt"
 	"reflect"
+	"rhodium/internal/brain"
 	"rhodium/internal/gh"
 	"time"
 
@@ -34,7 +35,7 @@ const pollInterval = 500 * time.Millisecond
 // input) hangs off the per-view structs.
 type app struct {
 	cfg   *Config
-	brain *Brain
+	brain *brain.Brain
 
 	width, height int
 	activeView    view
@@ -60,7 +61,7 @@ type app struct {
 	selectedFile   string
 	listViewOrigin view // whichever of viewTodo/viewPRs the user drilled from
 
-	reviewSession *ReviewSession
+	reviewSession *brain.ReviewSession
 
 	// contributors caches the per-repo contributor list fetched on first
 	// use of the @-mention picker. Lifetime is the app session; a restart
@@ -80,10 +81,10 @@ type app struct {
 	pollGen int
 }
 
-func newApp(cfg *Config, brain *Brain) *app {
+func newApp(cfg *Config, b *brain.Brain) *app {
 	a := &app{
 		cfg:             cfg,
-		brain:           brain,
+		brain:           b,
 		activeView:      viewTodo,
 		todo:            newTodoView(),
 		prs:             newPRsView(),
@@ -99,7 +100,7 @@ func newApp(cfg *Config, brain *Brain) *app {
 		prComments:      map[string][]gh.Comment{},
 	}
 
-	cached := brain.CachedPRs()
+	cached := b.CachedPRs()
 	if len(cached) > 0 {
 		a.allPRs = cached
 		a.prs.rebuild(a)
@@ -284,7 +285,7 @@ func (a *app) openPR(pr gh.PR) tea.Cmd {
 	a.activeView = viewFiles
 	a.files.rebuildDescVP(a)
 	a.pollGen++
-	key := prKey(pr.Repo, pr.Number)
+	key := brain.PRKey(pr.Repo, pr.Number)
 	cmds := []tea.Cmd{pollTickCmd(a.pollGen)}
 	if _, cached := a.prComments[key]; !cached {
 		cmds = append(cmds, loadCommentsCmd(pr))
@@ -327,7 +328,7 @@ func (a *app) currentFile() (gh.FileChange, bool) {
 	if a.selectedPR == nil {
 		return gh.FileChange{}, false
 	}
-	for _, f := range a.prFiles[prKey(a.selectedPR.Repo, a.selectedPR.Number)] {
+	for _, f := range a.prFiles[brain.PRKey(a.selectedPR.Repo, a.selectedPR.Number)] {
 		if f.Path == a.selectedFile {
 			return f, true
 		}
@@ -351,7 +352,7 @@ func (a *app) prHasOutstandingWork(pr gh.PR) bool {
 	if !touched {
 		return true // unseen
 	}
-	files, filesLoaded := a.prFiles[prKey(pr.Repo, pr.Number)]
+	files, filesLoaded := a.prFiles[brain.PRKey(pr.Repo, pr.Number)]
 	if !filesLoaded {
 		return true // touched but files not yet loaded — assume in-progress
 	}
@@ -418,7 +419,7 @@ func (a *app) onPRsLoaded(msg prsLoadedMsg) tea.Cmd {
 		return nil
 	}
 	for _, p := range msg.prs {
-		a.freshKeys[prKey(p.Repo, p.Number)] = true
+		a.freshKeys[brain.PRKey(p.Repo, p.Number)] = true
 	}
 	added := mergePRs(a, msg.prs)
 	a.prs.rebuild(a)
@@ -433,10 +434,10 @@ func (a *app) onFilesLoaded(msg filesLoadedMsg) tea.Cmd {
 		a.statusMsg = "error: " + msg.err.Error()
 		return nil
 	}
-	key := prKey(msg.pr.Repo, msg.pr.Number)
+	key := brain.PRKey(msg.pr.Repo, msg.pr.Number)
 	a.prFiles[key] = msg.files
 	a.prs.rebuild(a)
-	if a.selectedPR != nil && prKey(a.selectedPR.Repo, a.selectedPR.Number) == key {
+	if a.selectedPR != nil && brain.PRKey(a.selectedPR.Repo, a.selectedPR.Number) == key {
 		a.files.rebuild(a)
 		a.files.list.Title = fmt.Sprintf("Files in %s#%d", msg.pr.Repo, msg.pr.Number)
 	}
@@ -449,7 +450,7 @@ func (a *app) onFilesLoaded(msg filesLoadedMsg) tea.Cmd {
 func (a *app) onAutoAdvance(msg autoAdvanceMsg) tea.Cmd {
 	if len(msg.advancedFiles) > 0 {
 		a.prs.rebuild(a)
-		if a.selectedPR != nil && prKey(a.selectedPR.Repo, a.selectedPR.Number) == msg.prKey {
+		if a.selectedPR != nil && brain.PRKey(a.selectedPR.Repo, a.selectedPR.Number) == msg.prKey {
 			a.files.rebuild(a)
 			a.reviewSession = a.brain.ActiveSession(a.selectedPR.Repo, a.selectedPR.Number)
 		}
@@ -462,7 +463,7 @@ func (a *app) onPrefetchDone() tea.Cmd {
 	if len(a.freshKeys) > 0 {
 		var live []gh.PR
 		for _, p := range a.allPRs {
-			if a.freshKeys[prKey(p.Repo, p.Number)] {
+			if a.freshKeys[brain.PRKey(p.Repo, p.Number)] {
 				live = append(live, p)
 			}
 		}
@@ -575,10 +576,10 @@ func (a *app) onMergeSubmitted(msg mergeSubmittedMsg) tea.Cmd {
 		return nil
 	}
 	a.statusMsg = fmt.Sprintf("merged: %s on %s#%d", msg.method, msg.repo, msg.prNum)
-	key := prKey(msg.repo, msg.prNum)
+	key := brain.PRKey(msg.repo, msg.prNum)
 	kept := a.allPRs[:0]
 	for _, p := range a.allPRs {
-		if prKey(p.Repo, p.Number) != key {
+		if brain.PRKey(p.Repo, p.Number) != key {
 			kept = append(kept, p)
 		}
 	}
@@ -600,7 +601,7 @@ func (a *app) onCommentsLoaded(msg commentsLoadedMsg) tea.Cmd {
 		a.statusMsg = "comments: " + msg.err.Error()
 		return nil
 	}
-	a.prComments[prKey(msg.repo, msg.prNum)] = msg.comments
+	a.prComments[brain.PRKey(msg.repo, msg.prNum)] = msg.comments
 	if a.activeView == viewComments {
 		a.comments.rebuild(a)
 	}

@@ -2,6 +2,7 @@ package rhodium
 
 import (
 	"fmt"
+	"rhodium/internal/brain"
 	"rhodium/internal/gh"
 	"strings"
 
@@ -95,7 +96,7 @@ func (v *prsView) bindings(a *app) []Binding {
 					return nil
 				}
 				a.selectedPR = &it.pr
-				if _, cached := a.prComments[prKey(it.pr.Repo, it.pr.Number)]; !cached {
+				if _, cached := a.prComments[brain.PRKey(it.pr.Repo, it.pr.Number)]; !cached {
 					return tea.Batch(loadCommentsCmd(it.pr), a.openComments(viewPRs))
 				}
 				return a.openComments(viewPRs)
@@ -137,11 +138,11 @@ func (v *prsView) delegate(msg tea.Msg) tea.Cmd {
 func mergePRs(a *app, prs []gh.PR) []gh.PR {
 	seen := make(map[string]bool, len(a.allPRs))
 	for _, p := range a.allPRs {
-		seen[prKey(p.Repo, p.Number)] = true
+		seen[brain.PRKey(p.Repo, p.Number)] = true
 	}
 	var added []gh.PR
 	for _, p := range prs {
-		k := prKey(p.Repo, p.Number)
+		k := brain.PRKey(p.Repo, p.Number)
 		if seen[k] {
 			continue
 		}
@@ -155,7 +156,7 @@ func mergePRs(a *app, prs []gh.PR) []gh.PR {
 func (v *prsView) rebuild(a *app) {
 	var savedKey string
 	if sel, ok := v.list.SelectedItem().(prItem); ok {
-		savedKey = prKey(sel.pr.Repo, sel.pr.Number)
+		savedKey = brain.PRKey(sel.pr.Repo, sel.pr.Number)
 	}
 
 	me := a.cfg.GitHubUser
@@ -169,7 +170,7 @@ func (v *prsView) rebuild(a *app) {
 		// before we've fetched its file list. This keeps already-touched
 		// PRs from popping between buckets during startup prefetch.
 		looked := a.brain.HasAnyMarks(pr.Repo, pr.Number)
-		if files, ok := a.prFiles[prKey(pr.Repo, pr.Number)]; ok {
+		if files, ok := a.prFiles[brain.PRKey(pr.Repo, pr.Number)]; ok {
 			unseen := a.brain.UnseenCount(pr.Repo, pr.Number, files)
 			if unseen == 0 {
 				it.summary = "✓ caught up"
@@ -235,7 +236,7 @@ func (v *prsView) rebuild(a *app) {
 	v.list.SetItems(items)
 	if savedKey != "" {
 		for i, it := range items {
-			if pi, ok := it.(prItem); ok && prKey(pi.pr.Repo, pi.pr.Number) == savedKey {
+			if pi, ok := it.(prItem); ok && brain.PRKey(pi.pr.Repo, pi.pr.Number) == savedKey {
 				v.list.Select(i)
 				break
 			}

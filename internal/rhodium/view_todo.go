@@ -2,6 +2,7 @@ package rhodium
 
 import (
 	"fmt"
+	"rhodium/internal/brain"
 	"rhodium/internal/gh"
 	"strings"
 
@@ -94,7 +95,7 @@ func (v *todoView) bindings(a *app) []Binding {
 					return nil
 				}
 				a.selectedPR = &it.pr
-				if _, cached := a.prComments[prKey(it.pr.Repo, it.pr.Number)]; !cached {
+				if _, cached := a.prComments[brain.PRKey(it.pr.Repo, it.pr.Number)]; !cached {
 					return tea.Batch(loadCommentsCmd(it.pr), a.openComments(viewTodo))
 				}
 				return a.openComments(viewTodo)
@@ -119,12 +120,12 @@ func (v *todoView) delegate(msg tea.Msg) tea.Cmd {
 func (v *todoView) rebuild(a *app) {
 	var savedKey string
 	if sel, ok := v.list.SelectedItem().(todoItem); ok {
-		savedKey = prKey(sel.pr.Repo, sel.pr.Number)
+		savedKey = brain.PRKey(sel.pr.Repo, sel.pr.Number)
 	}
 
 	var actionable, newPRs []todoItem
 	for _, pr := range a.allPRs {
-		key := prKey(pr.Repo, pr.Number)
+		key := brain.PRKey(pr.Repo, pr.Number)
 		ti := buildTodoItem(a, pr)
 
 		// Pin PRs to "needs attention" once they first appear there —
@@ -188,7 +189,7 @@ func (v *todoView) rebuild(a *app) {
 
 	if savedKey != "" {
 		for i, it := range items {
-			if pi, ok := it.(todoItem); ok && prKey(pi.pr.Repo, pi.pr.Number) == savedKey {
+			if pi, ok := it.(todoItem); ok && brain.PRKey(pi.pr.Repo, pi.pr.Number) == savedKey {
 				v.list.Select(i)
 				break
 			}
@@ -270,7 +271,7 @@ func buildTodoItem(a *app, pr gh.PR) *todoItem {
 	touched := a.brain.HasAnyMarks(pr.Repo, pr.Number) ||
 		len(a.brain.AllFileReviewedStates(pr.Repo, pr.Number)) > 0
 
-	files, filesLoaded := a.prFiles[prKey(pr.Repo, pr.Number)]
+	files, filesLoaded := a.prFiles[brain.PRKey(pr.Repo, pr.Number)]
 	var remaining int
 	if filesLoaded {
 		remaining = a.brain.UnseenCount(pr.Repo, pr.Number, files)
