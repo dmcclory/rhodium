@@ -849,7 +849,7 @@ func (v *diffView) bindings(a *app) []keys.Binding {
 			Name: "back", Keys: []string{"esc", "h", "left"},
 			Desc: "back to files", Group: "Navigate",
 			Action: func() tea.Cmd {
-				a.files.rebuild(a)
+				a.rebuildFiles()
 				a.prs.rebuild(a)
 				return router.Navigate(router.RouteFiles)
 			},
@@ -889,7 +889,7 @@ func (v *diffView) bindings(a *app) []keys.Binding {
 			Desc: "back to files (when all marked)", Group: "Navigate",
 			Action: func() tea.Cmd {
 				if v.allMarked() {
-					a.files.rebuild(a)
+					a.rebuildFiles()
 					a.prs.rebuild(a)
 					return router.Navigate(router.RouteFiles)
 				}

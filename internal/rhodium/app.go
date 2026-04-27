@@ -6,11 +6,12 @@ import (
 	"rhodium/internal/brain"
 	"rhodium/internal/gh"
 	"rhodium/internal/tui/comments"
+	"rhodium/internal/tui/files"
 	"rhodium/internal/tui/help"
 	"rhodium/internal/tui/keys"
 	"rhodium/internal/tui/router"
-	"rhodium/internal/tui/todo"
 	"rhodium/internal/tui/styles"
+	"rhodium/internal/tui/todo"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -48,7 +49,7 @@ type app struct {
 
 	todo     todo.Model
 	prs      prsView
-	files    filesView
+	files    files.Model
 	diff     diffView
 	comments comments.Model
 	help     help.Model
@@ -75,7 +76,7 @@ func newApp(cfg *Config, b *brain.Brain) *app {
 		layout:   layout{activeView: viewTodo},
 		todo:     todo.New(),
 		prs:      newPRsView(),
-		files:    newFilesView(),
+		files:    files.New(),
 		diff:     newDiffView(),
 		comments: comments.New(),
 		help:     help.New(),
@@ -84,6 +85,7 @@ func newApp(cfg *Config, b *brain.Brain) *app {
 		cache:    newCache(),
 		session:  newSession(),
 	}
+	a.files.AgentBindings = agentBindings(a)
 
 	cached := b.CachedPRs()
 	if len(cached) > 0 {
@@ -161,6 +163,14 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case todo.CommentsMsg:
 		return a, a.openCommentsForPR(m.PR, router.RouteTodo)
 
+	case files.OpenFileMsg:
+		return a, a.openFile(m.File)
+	case files.OpenCommentsMsg:
+		return a, a.openComments(router.RouteFiles)
+	case files.RebuildNotesMsg:
+		a.rebuildFilesNotes()
+		return a, nil
+
 	case tea.KeyMsg:
 		if a.help.Open {
 			switch m.String() {
@@ -191,7 +201,7 @@ func (a *app) View() string {
 	case viewPRs:
 		body = a.prs.View(a)
 	case viewFiles:
-		body = a.files.View(a)
+		body = a.files.View()
 	case viewDiff:
 		body = a.diff.View(a)
 	case viewComments:
@@ -226,7 +236,7 @@ func (a *app) renderHelp() string {
 		bindings = a.prs.bindings(a)
 		label = "All PRs"
 	case viewFiles:
-		bindings = a.files.bindings(a)
+		bindings = a.files.Bindings()
 		label = "Files"
 	case viewDiff:
 		bindings = a.diff.bindings(a)
@@ -264,7 +274,7 @@ func (a *app) routeKey(key tea.KeyMsg) tea.Cmd {
 	case viewPRs:
 		return a.prs.Update(a, key)
 	case viewFiles:
-		return a.files.Update(a, key)
+		return a.files.Update(key, globalBindings(a))
 	case viewDiff:
 		return a.diff.Update(a, key)
 	case viewComments:
@@ -280,7 +290,7 @@ func (a *app) routeToActive(msg tea.Msg) tea.Cmd {
 	case viewPRs:
 		return a.prs.Update(a, msg)
 	case viewFiles:
-		return a.files.Update(a, msg)
+		return a.files.Update(msg, globalBindings(a))
 	case viewDiff:
 		return a.diff.Update(a, msg)
 	case viewComments:
@@ -309,7 +319,12 @@ func (a *app) openPR(pr gh.PR) tea.Cmd {
 	a.session.selectedPR = &pr
 	a.session.review = a.brain.ActiveSession(pr.Repo, pr.Number)
 	a.layout.focus(viewFiles)
-	a.files.rebuildDescVP(a)
+	if a.session.listOrigin == viewTodo {
+		a.files.BackRoute = router.RouteTodo
+	} else {
+		a.files.BackRoute = router.RoutePRs
+	}
+	a.rebuildFilesDesc()
 	gen := a.status.bumpPoll()
 	key := brain.PRKey(pr.Repo, pr.Number)
 	cmds := []tea.Cmd{pollTickCmd(gen)}
@@ -317,13 +332,12 @@ func (a *app) openPR(pr gh.PR) tea.Cmd {
 		cmds = append(cmds, loadCommentsCmd(pr))
 	}
 	if _, cached := a.cache.prFiles[key]; cached {
-		a.files.rebuild(a)
-		a.files.list.Title = fmt.Sprintf("Files in %s#%d", pr.Repo, pr.Number)
+		a.rebuildFiles()
+		a.files.SetTitle(fmt.Sprintf("Files in %s#%d", pr.Repo, pr.Number))
 		return tea.Batch(cmds...)
 	}
-	a.files.loadingFiles = true
-	a.files.list.Title = fmt.Sprintf("Files in %s#%d (loading...)", pr.Repo, pr.Number)
-	a.files.list.SetItems(nil)
+	a.files.SetTitle(fmt.Sprintf("Files in %s#%d (loading...)", pr.Repo, pr.Number))
+	a.files.ClearItems()
 	cmds = append(cmds, loadFilesCmd(pr))
 	return tea.Batch(cmds...)
 }
@@ -522,7 +536,7 @@ func (a *app) footer() string {
 	case viewPRs:
 		return a.prs.Footer(a)
 	case viewFiles:
-		return a.files.Footer(a)
+		return a.files.Footer()
 	case viewDiff:
 		return a.diff.Footer(a)
 	case viewComments:
@@ -568,7 +582,6 @@ func (a *app) onPRsLoaded(msg prsLoadedMsg) tea.Cmd {
 }
 
 func (a *app) onFilesLoaded(msg filesLoadedMsg) tea.Cmd {
-	a.files.loadingFiles = false
 	if msg.err != nil {
 		a.status.msg = "error: " + msg.err.Error()
 		return nil
@@ -577,8 +590,8 @@ func (a *app) onFilesLoaded(msg filesLoadedMsg) tea.Cmd {
 	a.cache.prFiles[key] = msg.files
 	a.prs.rebuild(a)
 	if a.session.selectedPR != nil && brain.PRKey(a.session.selectedPR.Repo, a.session.selectedPR.Number) == key {
-		a.files.rebuild(a)
-		a.files.list.Title = fmt.Sprintf("Files in %s#%d", msg.pr.Repo, msg.pr.Number)
+		a.rebuildFiles()
+		a.files.SetTitle(fmt.Sprintf("Files in %s#%d", msg.pr.Repo, msg.pr.Number))
 	}
 	if a.brain.IsScrutinized(msg.pr.Repo, msg.pr.Number) {
 		return nil
@@ -590,7 +603,7 @@ func (a *app) onAutoAdvance(msg autoAdvanceMsg) tea.Cmd {
 	if len(msg.advancedFiles) > 0 {
 		a.prs.rebuild(a)
 		if a.session.selectedPR != nil && brain.PRKey(a.session.selectedPR.Repo, a.session.selectedPR.Number) == msg.prKey {
-			a.files.rebuild(a)
+			a.rebuildFiles()
 			a.session.review = a.brain.ActiveSession(a.session.selectedPR.Repo, a.session.selectedPR.Number)
 		}
 		a.status.msg = fmt.Sprintf("✓ auto-caught-up %d files", len(msg.advancedFiles))
@@ -624,7 +637,7 @@ func (a *app) onEditorDone(msg editorDoneMsg) tea.Cmd {
 			a.diff.notes = a.brain.NotesForFile(pr.Repo, pr.Number, a.session.selectedFile)
 			a.diff.redraw()
 		}
-		a.files.rebuild(a)
+		a.rebuildFiles()
 		a.prs.rebuild(a)
 	}
 	return nil
@@ -658,7 +671,7 @@ func (a *app) onInlineNotesReady(msg inlineNotesReadyMsg) tea.Cmd {
 	}
 	a.status.msg = fmt.Sprintf("%s: %d notes added", msg.action, saved)
 	// Refresh list glyphs / diff overlay so new notes show up immediately.
-	a.files.rebuild(a)
+	a.rebuildFiles()
 	a.prs.rebuild(a)
 	if a.layout.activeView == viewDiff && a.session.selectedFile != "" {
 		a.diff.notes = a.brain.NotesForFile(msg.pr.Repo, msg.pr.Number, a.session.selectedFile)
@@ -783,7 +796,7 @@ func (a *app) onPollTick(msg pollTickMsg) tea.Cmd {
 	// Always rebuild item lists — cheap, and catches per-file status
 	// flips that don't touch the current diff buffer but change file-list
 	// glyphs.
-	a.files.rebuild(a)
+	a.rebuildFiles()
 	a.prs.rebuild(a)
 
 	return pollTickCmd(a.status.pollGen)
