@@ -18,8 +18,6 @@ const (
 	viewComments
 )
 
-var appStyle = lipgloss.NewStyle().Padding(0, 1)
-
 // sectionItem is a non-interactive header used to group list entries
 // into "in progress" / "unseen" buckets. Enter/l handlers ignore it via
 // type assertion.

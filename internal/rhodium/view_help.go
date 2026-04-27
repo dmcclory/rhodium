@@ -7,6 +7,9 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+
+	"rhodium/internal/tui/keys"
+	"rhodium/internal/tui/styles"
 )
 
 // overlay composites fg on top of bg starting at column x, row y. Both are
@@ -60,16 +63,6 @@ type helpOverlay struct {
 }
 
 var (
-	helpBoxStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("63")).
-			Padding(1, 2)
-
-	helpTitleStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("63")).
-			MarginBottom(1)
-
 	helpGroupStyle = lipgloss.NewStyle().
 			Bold(true).
 			Underline(true).
@@ -87,7 +80,7 @@ var (
 // Render returns the bordered help box alone — positioning/compositing over
 // the background view is done by overlay() in app.View.
 func (h *helpOverlay) Render(a *app) string {
-	var bindings []Binding
+	var bindings []keys.Binding
 	switch a.layout.activeView {
 	case viewTodo:
 		bindings = a.todo.bindings(a)
@@ -103,10 +96,10 @@ func (h *helpOverlay) Render(a *app) string {
 	bindings = append(bindings, globalBindings(a)...)
 
 	body := renderHelpBody(a, bindings)
-	return helpBoxStyle.Render(body)
+	return styles.HelpBox.Render(body)
 }
 
-func renderHelpBody(a *app, bindings []Binding) string {
+func renderHelpBody(a *app, bindings []keys.Binding) string {
 	viewLabel := map[view]string{
 		viewTodo:     "Todo",
 		viewPRs:      "All PRs",
@@ -116,11 +109,11 @@ func renderHelpBody(a *app, bindings []Binding) string {
 	}[a.layout.activeView]
 
 	var b strings.Builder
-	b.WriteString(helpTitleStyle.Render(fmt.Sprintf("Keys — %s view", viewLabel)))
+	b.WriteString(styles.HelpTitle.Render(fmt.Sprintf("Keys — %s view", viewLabel)))
 	b.WriteByte('\n')
 
 	groups := groupBy(bindings)
-	for _, g := range groupOrder {
+	for _, g := range keys.GroupOrder {
 		entries, ok := groups[g]
 		if !ok || len(entries) == 0 {
 			continue
@@ -141,7 +134,7 @@ type helpEntry struct{ keys, desc string }
 // groupBy collects bindings into display groups, deduplicating by Name so a
 // binding that appears in both the view table and globals (shouldn't happen
 // in practice, but cheap to guard) only renders once.
-func groupBy(bindings []Binding) map[string][]helpEntry {
+func groupBy(bindings []keys.Binding) map[string][]helpEntry {
 	seen := map[string]bool{}
 	out := map[string][]helpEntry{}
 	for _, b := range bindings {

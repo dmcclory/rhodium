@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"rhodium/internal/brain"
 	"rhodium/internal/gh"
+	"rhodium/internal/tui/keys"
 	"rhodium/internal/tui/router"
+	"rhodium/internal/tui/styles"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/viewport"
@@ -49,7 +51,7 @@ func (v *commentsView) Footer(a *app) string {
 
 func (v *commentsView) Update(a *app, msg tea.Msg) tea.Cmd {
 	if key, ok := msg.(tea.KeyMsg); ok {
-		if cmd, matched := dispatch(key.String(), false, v.bindings(a), globalBindings(a)); matched {
+		if cmd, matched := keys.Dispatch(key.String(), false, v.bindings(a), globalBindings(a)); matched {
 			return cmd
 		}
 	}
@@ -58,8 +60,8 @@ func (v *commentsView) Update(a *app, msg tea.Msg) tea.Cmd {
 	return cmd
 }
 
-func (v *commentsView) bindings(a *app) []Binding {
-	return []Binding{
+func (v *commentsView) bindings(a *app) []keys.Binding {
+	return []keys.Binding{
 		{
 			Name: "back", Keys: []string{"esc", "h", "left"},
 			Desc: "back", Group: "Navigate",
@@ -117,13 +119,13 @@ func renderComment(c gh.Comment) string {
 	case "review":
 		switch c.State {
 		case "APPROVED":
-			tag = statusApprovedStyle.Render("APPROVED")
+			tag = styles.StatusApproved.Render("APPROVED")
 		case "CHANGES_REQUESTED":
-			tag = statusChangesStyle.Render("CHANGES_REQUESTED")
+			tag = styles.StatusChanges.Render("CHANGES_REQUESTED")
 		case "DISMISSED":
 			tag = lipgloss.NewStyle().Faint(true).Render("DISMISSED")
 		default:
-			tag = statusReviewStyle.Render("COMMENTED")
+			tag = styles.StatusReview.Render("COMMENTED")
 		}
 	case "inline":
 		tag = lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Render(

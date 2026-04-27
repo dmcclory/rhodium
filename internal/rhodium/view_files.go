@@ -5,6 +5,7 @@ import (
 	"rhodium/internal/brain"
 	"rhodium/internal/diff"
 	"rhodium/internal/gh"
+	"rhodium/internal/tui/keys"
 	"rhodium/internal/tui/router"
 	"strings"
 
@@ -84,14 +85,14 @@ func (v *filesView) Update(a *app, msg tea.Msg) tea.Cmd {
 		return v.delegate(msg)
 	}
 	filtering := v.list.FilterState() == list.Filtering
-	if cmd, matched := dispatch(key.String(), filtering, v.bindings(a), globalBindings(a)); matched {
+	if cmd, matched := keys.Dispatch(key.String(), filtering, v.bindings(a), globalBindings(a)); matched {
 		return cmd
 	}
 	return v.delegate(msg)
 }
 
-func (v *filesView) bindings(a *app) []Binding {
-	return append([]Binding{
+func (v *filesView) bindings(a *app) []keys.Binding {
+	return append([]keys.Binding{
 		{
 			Name: "back", Keys: []string{"esc", "h", "left"},
 			Desc: "back", Group: "Navigate",

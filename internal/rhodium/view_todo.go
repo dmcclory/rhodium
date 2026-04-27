@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"rhodium/internal/brain"
 	"rhodium/internal/gh"
+	"rhodium/internal/tui/keys"
 	"rhodium/internal/tui/router"
 	"strings"
 
@@ -39,14 +40,14 @@ func (v *todoView) Update(a *app, msg tea.Msg) tea.Cmd {
 		return v.delegate(msg)
 	}
 	filtering := v.list.FilterState() == list.Filtering
-	if cmd, matched := dispatch(key.String(), filtering, v.bindings(a), globalBindings(a)); matched {
+	if cmd, matched := keys.Dispatch(key.String(), filtering, v.bindings(a), globalBindings(a)); matched {
 		return cmd
 	}
 	return v.delegate(msg)
 }
 
-func (v *todoView) bindings(a *app) []Binding {
-	return []Binding{
+func (v *todoView) bindings(a *app) []keys.Binding {
+	return []keys.Binding{
 		{
 			Name: "all-prs", Keys: []string{"a"},
 			Desc: "all PRs", Group: "Navigate",

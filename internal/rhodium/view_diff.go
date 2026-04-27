@@ -5,7 +5,9 @@ import (
 	"rhodium/internal/brain"
 	"rhodium/internal/diff"
 	"rhodium/internal/gh"
+	"rhodium/internal/tui/keys"
 	"rhodium/internal/tui/router"
+	"rhodium/internal/tui/styles"
 	"strings"
 	"unicode"
 
@@ -469,7 +471,7 @@ func (v *diffView) currentSegmentView() (diff.View, bool) {
 }
 
 func (v *diffView) renderNotingView(a *app) string {
-	_, padV := appStyle.GetFrameSize()
+	_, padV := styles.App.GetFrameSize()
 	totalH := a.layout.height - padV - 1 // minus footer
 	taHeight := v.noteInput.Height() + 2
 	diffH := totalH - taHeight
@@ -818,7 +820,7 @@ func isMentionChar(r rune) bool {
 }
 
 func (v *diffView) updateKeys(a *app, msg tea.KeyMsg) tea.Cmd {
-	if cmd, matched := dispatch(msg.String(), false, v.bindings(a), globalBindings(a)); matched {
+	if cmd, matched := keys.Dispatch(msg.String(), false, v.bindings(a), globalBindings(a)); matched {
 		return cmd
 	}
 	var cmd tea.Cmd
@@ -835,14 +837,14 @@ func (v *diffView) updateKeys(a *app, msg tea.KeyMsg) tea.Cmd {
 // in help. Dispatch only ever consults the base table because Update
 // routes to updateNotingKeys / updateMentionKeys before reaching the
 // dispatch path in noting modes.
-func (v *diffView) bindings(a *app) []Binding {
+func (v *diffView) bindings(a *app) []keys.Binding {
 	if v.noting {
 		if v.mention.open {
 			return mentionPickerBindings()
 		}
 		return notingBindings()
 	}
-	return append([]Binding{
+	return append([]keys.Binding{
 		{
 			Name: "back", Keys: []string{"esc", "h", "left"},
 			Desc: "back to files", Group: "Navigate",
@@ -1065,8 +1067,8 @@ func (v *diffView) bindings(a *app) []Binding {
 // notingBindings are display-only entries shown in the help overlay while
 // the user is composing a note. The actual key handling lives in
 // updateNotingKeys; Action is nil because dispatch never sees these.
-func notingBindings() []Binding {
-	return []Binding{
+func notingBindings() []keys.Binding {
+	return []keys.Binding{
 		{Name: "save-note", Keys: []string{"ctrl+d"}, Desc: "save note", Group: "Notes"},
 		{Name: "cancel-note", Keys: []string{"esc"}, Desc: "cancel without saving", Group: "Notes"},
 		{Name: "mention", Keys: []string{"@"}, Desc: "open @-mention picker (at word boundary)", Group: "Notes"},
@@ -1076,8 +1078,8 @@ func notingBindings() []Binding {
 // mentionPickerBindings are display-only entries shown in the help overlay
 // while the @-mention picker is open over the note textarea. Routing lives
 // in updateMentionKeys.
-func mentionPickerBindings() []Binding {
-	return []Binding{
+func mentionPickerBindings() []keys.Binding {
+	return []keys.Binding{
 		{Name: "mention-nav", Keys: []string{"up", "down"}, Desc: "move selection", Group: "Mention"},
 		{Name: "mention-filter", Keys: []string{"a-z, 0-9, -, _"}, Desc: "type to filter contributors", Group: "Mention"},
 		{Name: "mention-accept", Keys: []string{"enter"}, Desc: "insert @login and close", Group: "Mention"},
@@ -1087,7 +1089,7 @@ func mentionPickerBindings() []Binding {
 }
 
 func (v *diffView) restoreSize(a *app) {
-	h, padV := appStyle.GetFrameSize()
+	h, padV := styles.App.GetFrameSize()
 	v.vp.Width = a.layout.width - h
 	v.vp.Height = a.layout.height - padV - 1
 }

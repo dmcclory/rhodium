@@ -6,6 +6,7 @@ import (
 	"rhodium/internal/brain"
 	"rhodium/internal/gh"
 	"rhodium/internal/tui/router"
+	"rhodium/internal/tui/styles"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -182,7 +183,7 @@ func (a *app) View() string {
 	case viewComments:
 		body = a.comments.View(a)
 	}
-	rendered := appStyle.Render(body) + "\n" + lipgloss.NewStyle().Faint(true).Render(a.footer())
+	rendered := styles.App.Render(body) + "\n" + lipgloss.NewStyle().Faint(true).Render(a.footer())
 
 	if a.review.open {
 		rendered = centerOverlay(rendered, a.renderReviewModal(), a.layout.width, a.layout.height)
@@ -247,7 +248,7 @@ func (a *app) routeToActive(msg tea.Msg) tea.Cmd {
 }
 
 func (a *app) relayout() {
-	h, padV := appStyle.GetFrameSize()
+	h, padV := styles.App.GetFrameSize()
 	listW, listH := a.layout.width-h, a.layout.height-padV-1
 	a.todo.Resize(listW, listH)
 	a.prs.Resize(listW, listH)

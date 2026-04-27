@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"rhodium/internal/brain"
 	"rhodium/internal/gh"
+	"rhodium/internal/tui/keys"
 	"rhodium/internal/tui/router"
+	"rhodium/internal/tui/styles"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -40,14 +42,14 @@ func (v *prsView) Update(a *app, msg tea.Msg) tea.Cmd {
 		return v.delegate(msg)
 	}
 	filtering := v.list.FilterState() == list.Filtering
-	if cmd, matched := dispatch(key.String(), filtering, v.bindings(a), globalBindings(a)); matched {
+	if cmd, matched := keys.Dispatch(key.String(), filtering, v.bindings(a), globalBindings(a)); matched {
 		return cmd
 	}
 	return v.delegate(msg)
 }
 
-func (v *prsView) bindings(a *app) []Binding {
-	return []Binding{
+func (v *prsView) bindings(a *app) []keys.Binding {
+	return []keys.Binding{
 		{
 			Name: "back", Keys: []string{"esc", "h", "left"},
 			Desc: "back to todo", Group: "Navigate",
@@ -352,11 +354,11 @@ func renderPRStatus(p gh.PR) string {
 	case p.IsDraft:
 		labels = append(labels, statusDraftStyle.Render("DRAFT"))
 	case p.ReviewDecision == "APPROVED":
-		labels = append(labels, statusApprovedStyle.Render("APPROVED"))
+		labels = append(labels, styles.StatusApproved.Render("APPROVED"))
 	case p.ReviewDecision == "CHANGES_REQUESTED":
-		labels = append(labels, statusChangesStyle.Render("CHANGES_REQ"))
+		labels = append(labels, styles.StatusChanges.Render("CHANGES_REQ"))
 	case p.ReviewDecision == "REVIEW_REQUIRED":
-		labels = append(labels, statusReviewStyle.Render("REVIEW_REQ"))
+		labels = append(labels, styles.StatusReview.Render("REVIEW_REQ"))
 	}
 	var head string
 	if len(labels) > 0 {
@@ -365,14 +367,14 @@ func renderPRStatus(p gh.PR) string {
 	var glyphs []string
 	switch p.CIStatus {
 	case "SUCCESS":
-		glyphs = append(glyphs, statusApprovedStyle.Render("✓"))
+		glyphs = append(glyphs, styles.StatusApproved.Render("✓"))
 	case "FAILURE":
-		glyphs = append(glyphs, statusChangesStyle.Render("✗"))
+		glyphs = append(glyphs, styles.StatusChanges.Render("✗"))
 	case "PENDING":
-		glyphs = append(glyphs, statusReviewStyle.Render("•"))
+		glyphs = append(glyphs, styles.StatusReview.Render("•"))
 	}
 	if p.Mergeable == "CONFLICTING" {
-		glyphs = append(glyphs, statusChangesStyle.Render("⚠"))
+		glyphs = append(glyphs, styles.StatusChanges.Render("⚠"))
 	}
 	if len(glyphs) > 0 {
 		if head != "" {
@@ -383,12 +385,7 @@ func renderPRStatus(p gh.PR) string {
 	return head
 }
 
-var (
-	statusApprovedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-	statusChangesStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
-	statusReviewStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
-	statusDraftStyle    = lipgloss.NewStyle().Faint(true)
-)
+var statusDraftStyle = lipgloss.NewStyle().Faint(true)
 
 // padRight right-pads s with spaces to the given visible width. lipgloss.Width
 // strips ANSI codes, so this works after styling.
