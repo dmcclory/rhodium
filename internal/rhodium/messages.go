@@ -106,3 +106,29 @@ type commentsLoadedMsg struct {
 	comments []gh.Comment
 	err      error
 }
+
+// inlineReplyPostedMsg lands after gh.ReplyToInlineComment returns.
+// The handler refreshes that PR's comment cache so the new reply
+// renders under the existing thread in the diff view.
+type inlineReplyPostedMsg struct {
+	repo  string
+	prNum int
+	ghID  int64
+	err   error
+}
+
+// prsRefreshedMsg lands after the periodic remote refresh re-lists PRs
+// for one repo. Distinguished from prsLoadedMsg because the handler
+// updates live-status fields on existing rows and prunes per-repo
+// instead of running the cold-start prefetch.
+type prsRefreshedMsg struct {
+	repo string
+	prs  []gh.PR
+	err  error
+}
+
+// remoteRefreshTickMsg fires on a slow interval (remoteRefreshInterval).
+// On each tick the app re-lists every configured repo and re-fetches
+// comments for every PR with a populated comment cache. Reschedules
+// itself.
+type remoteRefreshTickMsg struct{}

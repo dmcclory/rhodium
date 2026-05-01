@@ -78,6 +78,14 @@ type PublishNoteMsg struct {
 	Commit string
 }
 
+// ReplyInlineMsg requests the app POST a reply to an existing GitHub
+// inline comment thread. ReplyToID can be any comment in the thread.
+type ReplyInlineMsg struct {
+	PR        gh.PR
+	ReplyToID int64
+	Body      string
+}
+
 // LoadContributorsMsg requests the app fetch contributors for Repo and
 // echo them back via SetContributors. Emitted on first @ when the cache
 // is cold.
@@ -152,6 +160,12 @@ type Model struct {
 	noteLineNo   int
 	noteLineHash string
 
+	// Reply input state. When replyToID != 0 the noting textarea is
+	// composing a reply to an inline thread instead of a local note.
+	// replyToAuthor is captured for the footer hint only.
+	replyToID     int64
+	replyToAuthor string
+
 	// @-mention picker overlay (only meaningful while noting).
 	mention      mentionPicker
 	contributors map[string][]gh.Contributor // by repo
@@ -219,6 +233,9 @@ func (m *Model) Footer() string {
 		if m.mention.open {
 			return "@-mention  ↑/↓: nav  type to filter  enter: insert  esc: close"
 		}
+		if m.replyToID != 0 {
+			return fmt.Sprintf("replying to @%s on line %d  ctrl+d: send  esc: cancel", m.replyToAuthor, m.noteLineNo)
+		}
 		return fmt.Sprintf("line %d  ctrl+d: save  type @ to mention  esc: cancel", m.noteLineNo)
 	}
 	marked := 0
@@ -256,7 +273,7 @@ func (m *Model) Footer() string {
 			modeHint = "  [full diff]  d: catch-up"
 		}
 	}
-	return fmt.Sprintf("hunk %d/%d  marked %d/%d%s  ↑/↓: nav  j/k: cursor  space: toggle+next  m: mark all  c: note  P: publish note  o: open  u: unmark  h: back", cur, total, marked, total, modeHint)
+	return fmt.Sprintf("hunk %d/%d  marked %d/%d%s  ↑/↓: nav  j/k: cursor  space: toggle+next  m: mark all  c: note  P: publish note  R: reply to thread  o: open  u: unmark  h: back", cur, total, marked, total, modeHint)
 }
 
 // Update routes a message: keys to mode-specific handlers, async results

@@ -19,16 +19,32 @@ func (m *Model) updateNotingKeys(b Brain, msg tea.KeyMsg) tea.Cmd {
 	switch msg.String() {
 	case "esc":
 		m.noting = false
+		m.replyToID = 0
+		m.replyToAuthor = ""
 		m.noteInput.Blur()
+		m.noteInput.Placeholder = "Write a note... (ctrl+d to save, esc to cancel)"
 		m.restoreSize()
 		return nil
 	case "ctrl+d":
 		body := strings.TrimSpace(m.noteInput.Value())
+		replyTo := m.replyToID
 		m.noting = false
+		m.replyToID = 0
+		m.replyToAuthor = ""
 		m.noteInput.Blur()
+		m.noteInput.Placeholder = "Write a note... (ctrl+d to save, esc to cancel)"
 		m.restoreSize()
 		if body == "" || m.pr == nil {
 			return nil
+		}
+		if replyTo != 0 {
+			pr := *m.pr
+			return tea.Batch(
+				statusCmd("sending reply…"),
+				func() tea.Msg {
+					return ReplyInlineMsg{PR: pr, ReplyToID: replyTo, Body: body}
+				},
+			)
 		}
 		if err := b.SaveNote(m.pr.Repo, m.pr.Number, m.file, m.noteLineNo, m.noteLineHash, body); err != nil {
 			return statusCmd("save note: " + err.Error())

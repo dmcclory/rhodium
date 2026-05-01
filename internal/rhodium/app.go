@@ -33,6 +33,13 @@ var program *tea.Program
 // being wasteful.
 const pollInterval = 500 * time.Millisecond
 
+// remoteRefreshInterval controls how often we re-fetch GitHub side data
+// (PR list per repo, comments for cached PRs) so review decisions, CI
+// rollups, and incoming comments don't go stale. Separate from
+// pollInterval so each can be tuned independently — GitHub calls cost
+// more than SQLite reads.
+const remoteRefreshInterval = 60 * time.Second
+
 // app is the top-level tea.Model. It owns data shared across views
 // (brain, cfg, the PR cache, currently-selected PR/file) plus each
 // sub-model's UI state in a named field. The active view is addressed
@@ -105,10 +112,11 @@ func newApp(cfg *Config, b *brain.Brain) *app {
 }
 
 func (a *app) Init() tea.Cmd {
-	cmds := make([]tea.Cmd, len(a.cfg.Repos))
-	for i, repo := range a.cfg.Repos {
-		cmds[i] = loadRepoPRsCmd(repo)
+	cmds := make([]tea.Cmd, 0, len(a.cfg.Repos)+1)
+	for _, repo := range a.cfg.Repos {
+		cmds = append(cmds, loadRepoPRsCmd(repo))
 	}
+	cmds = append(cmds, remoteRefreshTickCmd())
 	return tea.Batch(cmds...)
 }
 
@@ -140,6 +148,12 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.onInlineNotesReady(m)
 	case notePublishedMsg:
 		return a, a.onNotePublished(m)
+	case inlineReplyPostedMsg:
+		return a, a.onInlineReplyPosted(m)
+	case prsRefreshedMsg:
+		return a, a.onPRsRefreshed(m)
+	case remoteRefreshTickMsg:
+		return a, a.onRemoteRefreshTick()
 	case review.SubmittedMsg:
 		return a, a.onReviewSubmitted(m)
 	case review.StatusMsg:
@@ -203,6 +217,8 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.openInEditor(m)
 	case tuidiff.PublishNoteMsg:
 		return a, a.publishNote(m)
+	case tuidiff.ReplyInlineMsg:
+		return a, a.replyInline(m)
 	case tuidiff.LoadContributorsMsg:
 		return a, loadContributorsCmd(m.Repo)
 
@@ -732,16 +748,52 @@ func (a *app) onNotePublished(msg notePublishedMsg) tea.Cmd {
 	return nil
 }
 
-// onReviewSubmitted lands after gh.SubmitReview returns. The PR list doesn't
-// re-fetch state — GitHub's approval status isn't rendered in the TUI
-// today — but the status line confirms what shipped.
+// onInlineReplyPosted lands after gh.ReplyToInlineComment returns. On
+// success we re-fetch the PR's comments so the new reply renders in
+// the diff view (RefreshGHInline runs from onCommentsLoaded).
+func (a *app) onInlineReplyPosted(msg inlineReplyPostedMsg) tea.Cmd {
+	if msg.err != nil {
+		a.status.msg = "reply: " + msg.err.Error()
+		return nil
+	}
+	a.status.msg = fmt.Sprintf("reply posted → GitHub #%d", msg.ghID)
+	return loadCommentsCmd(gh.PR{Repo: msg.repo, Number: msg.prNum})
+}
+
+// onReviewSubmitted lands after gh.SubmitReview returns. We optimistically
+// flip the local PR's ReviewDecision so the badge updates instantly; a
+// background re-fetch reconciles in case GitHub computed something
+// different (e.g. branch protection hasn't accepted the approval).
 func (a *app) onReviewSubmitted(msg review.SubmittedMsg) tea.Cmd {
 	if msg.Err != nil {
 		a.status.msg = "review: " + msg.Err.Error()
 		return nil
 	}
 	a.status.msg = fmt.Sprintf("review submitted: %s on %s#%d", msg.Event, msg.Repo, msg.PRNum)
-	return nil
+	if optimistic := optimisticDecision(msg.Event); optimistic != "" {
+		for i := range a.cache.allPRs {
+			p := &a.cache.allPRs[i]
+			if p.Repo == msg.Repo && p.Number == msg.PRNum {
+				p.ReviewDecision = optimistic
+				break
+			}
+		}
+		a.rebuildPRs()
+	}
+	return refreshRepoCmd(msg.Repo)
+}
+
+// optimisticDecision maps a review event to the ReviewDecision GitHub
+// will return once the review lands. COMMENT leaves the decision
+// untouched, so we return "" and let the next remote refresh resolve.
+func optimisticDecision(event gh.ReviewEvent) string {
+	switch event {
+	case gh.ReviewApprove:
+		return "APPROVED"
+	case gh.ReviewRequestChanges:
+		return "CHANGES_REQUESTED"
+	}
+	return ""
 }
 
 // onMergeSubmitted lands after gh.MergePR returns. On success we drop the PR
@@ -818,4 +870,78 @@ func (a *app) onPollTick(msg pollTickMsg) tea.Cmd {
 
 func pollTickCmd(gen int) tea.Cmd {
 	return tea.Tick(pollInterval, func(time.Time) tea.Msg { return pollTickMsg{gen: gen} })
+}
+
+// onRemoteRefreshTick refreshes GitHub-side data periodically: re-list
+// PRs for every configured repo (catches review-decision / CI / merge
+// state drift) and re-fetch comments for every PR with a populated
+// comment cache (catches incoming replies). Reschedules itself so the
+// loop runs for the lifetime of the program.
+func (a *app) onRemoteRefreshTick() tea.Cmd {
+	cmds := make([]tea.Cmd, 0, len(a.cfg.Repos)+len(a.cache.prComments)+1)
+	for _, repo := range a.cfg.Repos {
+		cmds = append(cmds, refreshRepoCmd(repo))
+	}
+	for _, pr := range a.cache.allPRs {
+		if _, has := a.cache.prComments[brain.PRKey(pr.Repo, pr.Number)]; has {
+			cmds = append(cmds, loadCommentsCmd(pr))
+		}
+	}
+	cmds = append(cmds, remoteRefreshTickCmd())
+	return tea.Batch(cmds...)
+}
+
+func remoteRefreshTickCmd() tea.Cmd {
+	return tea.Tick(remoteRefreshInterval, func(time.Time) tea.Msg { return remoteRefreshTickMsg{} })
+}
+
+// onPRsRefreshed merges a fresh per-repo listing into the cache: live-
+// status fields on existing rows are overwritten, new PRs are appended,
+// and PRs no longer in the listing for this repo are dropped (they've
+// been merged or closed). HeadSHA/BaseSHA are also updated so subsequent
+// openPR uses the current commits.
+func (a *app) onPRsRefreshed(msg prsRefreshedMsg) tea.Cmd {
+	if msg.err != nil {
+		a.status.msg = "refresh: " + msg.err.Error()
+		return nil
+	}
+	byKey := make(map[string]gh.PR, len(msg.prs))
+	for _, p := range msg.prs {
+		byKey[brain.PRKey(p.Repo, p.Number)] = p
+	}
+	kept := a.cache.allPRs[:0]
+	for _, existing := range a.cache.allPRs {
+		if existing.Repo != msg.repo {
+			kept = append(kept, existing)
+			continue
+		}
+		key := brain.PRKey(existing.Repo, existing.Number)
+		fresh, ok := byKey[key]
+		if !ok {
+			delete(a.cache.prFiles, key)
+			delete(a.cache.prComments, key)
+			delete(a.session.pinnedAttention, key)
+			continue
+		}
+		existing.Title = fresh.Title
+		existing.Author = fresh.Author
+		existing.Body = fresh.Body
+		existing.HeadSHA = fresh.HeadSHA
+		existing.BaseSHA = fresh.BaseSHA
+		existing.ReviewDecision = fresh.ReviewDecision
+		existing.IsDraft = fresh.IsDraft
+		existing.Mergeable = fresh.Mergeable
+		existing.CIStatus = fresh.CIStatus
+		kept = append(kept, existing)
+		delete(byKey, key)
+	}
+	a.cache.allPRs = kept
+	for _, p := range msg.prs {
+		if _, still := byKey[brain.PRKey(p.Repo, p.Number)]; still {
+			a.cache.allPRs = append(a.cache.allPRs, p)
+		}
+	}
+	a.rebuildPRs()
+	go a.brain.SetPRCache(a.cache.allPRs)
+	return nil
 }

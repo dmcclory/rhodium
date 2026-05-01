@@ -412,6 +412,33 @@ func PostInlineComment(repo string, prNum int, c InlineComment) (int64, error) {
 	return got.ID, nil
 }
 
+// ReplyToInlineComment posts a reply to an existing inline comment thread.
+// replyToID can be any comment id in the thread — GitHub routes the new
+// comment to the same root. Returns the new comment's id.
+func ReplyToInlineComment(repo string, prNum int, replyToID int64, body string) (int64, error) {
+	args := []string{
+		"api",
+		"--method", "POST",
+		fmt.Sprintf("repos/%s/pulls/%d/comments/%d/replies", repo, prNum, replyToID),
+		"-f", "body=" + body,
+	}
+	cmd := exec.Command("gh", args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return 0, fmt.Errorf("gh api reply %s#%d→%d: %w (%s)", repo, prNum, replyToID, err, strings.TrimSpace(stderr.String()))
+	}
+	var got ghAPIComment
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		return 0, fmt.Errorf("parse reply response: %w", err)
+	}
+	if got.ID == 0 {
+		return 0, fmt.Errorf("reply posted but no id in response")
+	}
+	return got.ID, nil
+}
+
 // ReviewEvent is the `event` field of POST pulls/:n/reviews. GitHub accepts
 // APPROVE, REQUEST_CHANGES, COMMENT, or PENDING (we don't expose PENDING —
 // nothing in the UI would let you come back and finish it).

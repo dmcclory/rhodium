@@ -54,3 +54,16 @@ func (a *app) publishNote(m tuidiff.PublishNoteMsg) tea.Cmd {
 		return notePublishedMsg{noteID: noteID, ghID: ghID, err: err}
 	}
 }
+
+// replyInline handles diff.ReplyInlineMsg: POST a reply to an existing
+// inline comment thread, returning inlineReplyPostedMsg back onto the
+// update loop.
+func (a *app) replyInline(m tuidiff.ReplyInlineMsg) tea.Cmd {
+	pr := m.PR
+	replyTo := m.ReplyToID
+	body := m.Body
+	return func() tea.Msg {
+		ghID, err := gh.ReplyToInlineComment(pr.Repo, pr.Number, replyTo, body)
+		return inlineReplyPostedMsg{repo: pr.Repo, prNum: pr.Number, ghID: ghID, err: err}
+	}
+}

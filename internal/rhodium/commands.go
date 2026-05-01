@@ -40,6 +40,17 @@ func loadCommentsCmd(pr gh.PR) tea.Cmd {
 	}
 }
 
+// refreshRepoCmd re-lists PRs for a repo on the periodic remote-refresh
+// tick. Unlike loadRepoPRsCmd, the result is a prsRefreshedMsg so the
+// handler updates live-status fields on existing rows rather than
+// re-running the cold-start prefetch.
+func refreshRepoCmd(repo string) tea.Cmd {
+	return func() tea.Msg {
+		prs, err := gh.ListPRs(repo)
+		return prsRefreshedMsg{repo: repo, prs: prs, err: err}
+	}
+}
+
 // autoAdvanceCmd checks each file in a PR for implicit review eligibility.
 // Three reasons a file can be auto-advanced without the reviewer opening it:
 //

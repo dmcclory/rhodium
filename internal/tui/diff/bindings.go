@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	corediff "rhodium/internal/diff"
+	"rhodium/internal/gh"
 	"rhodium/internal/tui/keys"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -127,7 +128,7 @@ func (m *Model) markBindings(b Brain) []keys.Binding {
 	}
 }
 
-// noteBindings: publish to GitHub, add at cursor.
+// noteBindings: publish to GitHub, add at cursor, reply to inline thread.
 func (m *Model) noteBindings() []keys.Binding {
 	return []keys.Binding{
 		{
@@ -139,6 +140,11 @@ func (m *Model) noteBindings() []keys.Binding {
 			Name: "note", Keys: []string{"c"},
 			Desc: "add note at cursor", Group: "Notes",
 			Action: func() tea.Cmd { return m.startNoteAtCursor() },
+		},
+		{
+			Name: "reply", Keys: []string{"R"},
+			Desc: "reply to inline thread at cursor", Group: "Notes",
+			Action: func() tea.Cmd { return m.startReplyAtCursor() },
 		},
 	}
 }
@@ -235,6 +241,40 @@ func (m *Model) startNoteAtCursor() tea.Cmd {
 	m.noteLineNo = lineNo
 	m.noteLineHash = m.cursorLineHash(lineNo)
 	m.noteInput.Reset()
+	return m.noteInput.Focus()
+}
+
+// startReplyAtCursor opens the noting textarea in reply mode if the
+// cursor is on a file line that has at least one GitHub inline comment.
+// The first inline comment on that line is used as the thread anchor;
+// GitHub routes the reply to the thread root regardless of which
+// member id is supplied.
+func (m *Model) startReplyAtCursor() tea.Cmd {
+	if m.pr == nil || m.file == "" {
+		return nil
+	}
+	lineNo := m.cursorFileLine()
+	if lineNo == 0 {
+		return statusCmd("cursor not on a file line")
+	}
+	var target *gh.Comment
+	for i := range m.ghInline {
+		c := m.ghInline[i]
+		if c.Line == lineNo {
+			target = &c
+			break
+		}
+	}
+	if target == nil {
+		return statusCmd(fmt.Sprintf("no inline thread on line %d", lineNo))
+	}
+	m.noting = true
+	m.noteLineNo = lineNo
+	m.noteLineHash = m.cursorLineHash(lineNo)
+	m.replyToID = target.GHID
+	m.replyToAuthor = target.Author
+	m.noteInput.Reset()
+	m.noteInput.Placeholder = fmt.Sprintf("Reply to @%s (ctrl+d to send, esc to cancel)", target.Author)
 	return m.noteInput.Focus()
 }
 
