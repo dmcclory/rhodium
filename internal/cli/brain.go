@@ -12,15 +12,17 @@ import (
 
 func cmdBrain(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: rhodium brain {status|log}")
+		return fmt.Errorf("usage: rhodium brain {status|log|show}")
 	}
 	switch args[0] {
 	case "status":
 		return cmdBrainStatus(args[1:])
 	case "log":
 		return cmdBrainLog(args[1:])
+	case "show":
+		return cmdBrainShow(args[1:])
 	default:
-		return fmt.Errorf("unknown brain subcommand: %s (try 'status' or 'log')", args[0])
+		return fmt.Errorf("unknown brain subcommand: %s (try 'status', 'log', or 'show')", args[0])
 	}
 }
 
@@ -98,14 +100,13 @@ type logJSONEvent struct {
 // page size (RecentEvents default is 100). --json emits JSONL suitable
 // for piping into a future `brain replay`.
 func cmdBrainLog(args []string) error {
-	// Parse args directly — splitFlags mis-handles value-taking flags
-	// like --limit 20, and this subcommand has no positional args.
+	flags, _ := splitFlags(args, "pr", "kind", "limit")
 	fs := flag.NewFlagSet("brain log", flag.ContinueOnError)
 	prRef := fs.String("pr", "", "filter to one PR (owner/repo#N)")
 	kind := fs.String("kind", "", "filter by kind prefix (e.g. mark., note., session.)")
 	limit := fs.Int("limit", 100, "max events to return")
 	asJSON := fs.Bool("json", false, "emit JSONL")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(flags); err != nil {
 		return err
 	}
 

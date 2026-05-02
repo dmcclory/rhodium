@@ -45,13 +45,26 @@ func Run(args []string) error {
 	}
 }
 
-// splitFlags partitions args into flags (anything starting with -) and positional.
-// This lets users pass flags before OR after positional args, which Go's flag
-// package doesn't do by default.
-func splitFlags(args []string) (flags, positional []string) {
-	for _, a := range args {
+// splitFlags partitions args into flags (anything starting with '-') and
+// positional. Value-taking flags (e.g. --limit 20) are consumed as a pair.
+// Pass the base names of flags that take a value (without leading dashes).
+// Example: splitFlags([]string{"--limit", "20", "foo"}, "limit")
+//   → flags=["--limit", "20"], positional=["foo"]
+func splitFlags(args []string, valueFlags ...string) (flags, positional []string) {
+	valueSet := make(map[string]bool, len(valueFlags))
+	for _, f := range valueFlags {
+		valueSet[f] = true
+	}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
 		if strings.HasPrefix(a, "-") {
 			flags = append(flags, a)
+			// Strip leading dashes to get the base name (handles --foo and -foo)
+			name := strings.TrimLeft(a, "-")
+			if valueSet[name] && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+				flags = append(flags, args[i])
+			}
 		} else {
 			positional = append(positional, a)
 		}
@@ -73,10 +86,11 @@ Usage:
   rhodium resolve <note-id>...                      mark one or more notes resolved
   rhodium brain status                              inspect the brain db (path, schema version, pending migrations)
   rhodium brain log [--pr ref] [--kind p] [--limit N]  print the brain mutation log, newest first
+  rhodium brain show <owner/repo#N>                  review state summary (files, hunks, notes, session)
   rhodium log <owner/repo#N> [--verbose]            per-commit review overlay for a PR
 
 Flags:
-  --json     emit JSON (notes, todo, state, brain log, log)
+  --json     emit JSON (notes, todo, state, brain log, brain show, log)
   --sync     (todo only) refresh the PR cache from GitHub before printing
   --all      (notes only) include resolved notes
   --pr       (brain log) filter to one PR (owner/repo#N)
