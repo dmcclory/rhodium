@@ -132,3 +132,7 @@ type prsRefreshedMsg struct {
 // comments for every PR with a populated comment cache. Reschedules
 // itself.
 type remoteRefreshTickMsg struct{}
+
+// markFullyReviewedMsg requests the app call Brain.MarkFullyReviewed for
+// the currently-open PR. Emitted by the files view's `M` binding.
+type markFullyReviewedMsg struct{}

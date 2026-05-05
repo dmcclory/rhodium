@@ -30,6 +30,11 @@ const descPaneHeight = 8
 // OpenFileMsg requests the app open the given file in the diff view.
 type OpenFileMsg struct{ File gh.FileChange }
 
+// MarkFullyReviewedMsg requests the app call Brain.MarkFullyReviewed for
+// the currently-open PR. Emitted by the files view's `M` binding, carrying
+// the file paths so the app doesn't need to re-fetch or cache-lookup.
+type MarkFullyReviewedMsg struct{ Paths []string }
+
 // OpenCommentsMsg requests the app open the PR-level comments view.
 type OpenCommentsMsg struct{}
 
@@ -201,6 +206,21 @@ func (m *Model) Bindings() []keys.Binding {
 			Desc: "view PR comments", Group: "View",
 			Action: func() tea.Cmd {
 				return func() tea.Msg { return OpenCommentsMsg{} }
+			},
+		},
+		{
+			Name: "mark-fully-reviewed", Keys: []string{"M"},
+			Desc: "mark PR reviewed", Group: "View",
+			Action: func() tea.Cmd {
+				return func() tea.Msg {
+					var paths []string
+					for _, it := range m.list.Items() {
+						if fi, ok := it.(Item); ok {
+							paths = append(paths, fi.File.Path)
+						}
+					}
+					return MarkFullyReviewedMsg{Paths: paths}
+				}
 			},
 		},
 	}, m.AgentBindings...)

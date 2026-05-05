@@ -191,6 +191,8 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case files.RebuildNotesMsg:
 		a.rebuildFilesNotes()
 		return a, nil
+	case files.MarkFullyReviewedMsg:
+		return a, a.onMarkFullyReviewed(m)
 
 	case prs.OpenPRMsg:
 		return a, a.openPR(m.PR)
@@ -950,5 +952,20 @@ func (a *app) onPRsRefreshed(msg prsRefreshedMsg) tea.Cmd {
 	}
 	a.rebuildPRs()
 	go a.brain.SetPRCache(a.cache.allPRs)
+	return nil
+}
+
+func (a *app) onMarkFullyReviewed(msg files.MarkFullyReviewedMsg) tea.Cmd {
+	pr := a.session.selectedPR
+	if pr == nil || len(msg.Paths) == 0 {
+		return nil
+	}
+	if err := a.brain.MarkFullyReviewed(pr.Repo, pr.Number, pr.HeadSHA, pr.BaseSHA, msg.Paths); err != nil {
+		a.status.msg = "mark: " + err.Error()
+		return nil
+	}
+	a.rebuildFiles()
+	a.rebuildPRs()
+	a.status.msg = fmt.Sprintf("marked %s#%d reviewed — %d files", pr.Repo, pr.Number, len(msg.Paths))
 	return nil
 }
