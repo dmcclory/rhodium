@@ -144,7 +144,7 @@ func TestBrainFileReviews(t *testing.T) {
 	}
 
 	// Record a review with head and base.
-	if err := b.SetFileReviewed("acme/web", 42, "src/main.go", "abc123", "base111"); err != nil {
+	if err := b.SetFileReviewed("acme/web", 42, "src/main.go", "abc123", "base111", MarkUser); err != nil {
 		t.Fatal(err)
 	}
 	s := b.FileReviewedState("acme/web", 42, "src/main.go")
@@ -153,7 +153,7 @@ func TestBrainFileReviews(t *testing.T) {
 	}
 
 	// Update to a new head+base — should overwrite.
-	if err := b.SetFileReviewed("acme/web", 42, "src/main.go", "def456", "base222"); err != nil {
+	if err := b.SetFileReviewed("acme/web", 42, "src/main.go", "def456", "base222", MarkUser); err != nil {
 		t.Fatal(err)
 	}
 	s = b.FileReviewedState("acme/web", 42, "src/main.go")
@@ -167,7 +167,7 @@ func TestBrainFileReviews(t *testing.T) {
 	}
 
 	// AllFileReviewedStates returns all entries for the PR.
-	if err := b.SetFileReviewed("acme/web", 42, "other.go", "ghi789", "base333"); err != nil {
+	if err := b.SetFileReviewed("acme/web", 42, "other.go", "ghi789", "base333", MarkUser); err != nil {
 		t.Fatal(err)
 	}
 	states := b.AllFileReviewedStates("acme/web", 42)
@@ -557,7 +557,7 @@ func TestBrainEventsFileReviewsAndScrutiny(t *testing.T) {
 	}
 	defer b.Close()
 
-	if err := b.SetFileReviewed("acme/web", 42, "src/main.go", "abc", "base"); err != nil {
+	if err := b.SetFileReviewed("acme/web", 42, "src/main.go", "abc", "base", MarkUser); err != nil {
 		t.Fatal(err)
 	}
 	ev := b.RecentEvents(EventFilter{KindPrefix: "file.reviewed", Limit: 1})
@@ -738,6 +738,114 @@ func TestBrainMarkFullyReviewed(t *testing.T) {
 	}
 }
 
+func TestBrainFileReviewMarkKind(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("RHODIUM_BRAIN", filepath.Join(dir, "brain.db"))
+
+	b, err := LoadBrain()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+
+	// User-reviewed file.
+	if err := b.SetFileReviewed("acme/web", 42, "a.go", "h1", "b1", MarkUser); err != nil {
+		t.Fatal(err)
+	}
+	s := b.FileReviewedState("acme/web", 42, "a.go")
+	if s.HeadSHA != "h1" || s.BaseSHA != "b1" || s.MarkKind != MarkUser {
+		t.Errorf("user: got %+v", s)
+	}
+
+	// Auto-advanced file.
+	if err := b.SetFileReviewed("acme/web", 42, "b.go", "h2", "b2", MarkAuto); err != nil {
+		t.Fatal(err)
+	}
+	s = b.FileReviewedState("acme/web", 42, "b.go")
+	if s.MarkKind != MarkAuto {
+		t.Errorf("auto: got mark_kind=%q, want %q", s.MarkKind, MarkAuto)
+	}
+
+	// Upgrading a file from user → auto (e.g. mark-fully-reviewed) overwrites.
+	if err := b.SetFileReviewed("acme/web", 42, "a.go", "h3", "b3", MarkAuto); err != nil {
+		t.Fatal(err)
+	}
+	s = b.FileReviewedState("acme/web", 42, "a.go")
+	if s.HeadSHA != "h3" || s.MarkKind != MarkAuto {
+		t.Errorf("upgrade: got %+v", s)
+	}
+
+	// AllFileReviewedStates carries kind.
+	states := b.AllFileReviewedStates("acme/web", 42)
+	if len(states) != 2 {
+		t.Fatalf("states: got %d, want 2", len(states))
+	}
+	if states["a.go"].MarkKind != MarkAuto {
+		t.Errorf("all[a.go]: mark_kind=%q, want auto", states["a.go"].MarkKind)
+	}
+	if states["b.go"].MarkKind != MarkAuto {
+		t.Errorf("all[b.go]: mark_kind=%q, want auto", states["b.go"].MarkKind)
+	}
+}
+
+func TestBrainFileReviewMarkKindDefault(t *testing.T) {
+	// Simulates pre-migration rows: no mark_kind column → defaults to "user".
+	dir := t.TempDir()
+	t.Setenv("RHODIUM_BRAIN", filepath.Join(dir, "brain.db"))
+
+	b, err := LoadBrain()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+
+	// Insert directly without mark_kind (mimics old schema rows).
+	key := PRKey("acme/web", 42)
+	if _, err := b.db.Exec(`
+		INSERT INTO file_reviews (pr_key, path, head_sha, base_sha)
+		VALUES (?, ?, 'h0', 'b0')`, key, "legacy.go"); err != nil {
+		t.Fatal(err)
+	}
+
+	s := b.FileReviewedState("acme/web", 42, "legacy.go")
+	if s.HeadSHA != "h0" {
+		t.Fatalf("legacy head: got %q, want h0", s.HeadSHA)
+	}
+	// Default mark_kind is "user" for pre-migration rows.
+	if s.MarkKind != MarkUser {
+		t.Errorf("legacy mark_kind: got %q, want %q", s.MarkKind, MarkUser)
+	}
+}
+
+func TestBrainFileReviewMarkKindPersist(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("RHODIUM_BRAIN", filepath.Join(dir, "brain.db"))
+
+	b, err := LoadBrain()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.SetFileReviewed("acme/web", 42, "a.go", "h1", "b1", MarkAuto); err != nil {
+		t.Fatal(err)
+	}
+	b.Close()
+
+	// Reload from disk.
+	b2, err := LoadBrain()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b2.Close()
+
+	s := b2.FileReviewedState("acme/web", 42, "a.go")
+	if s.MarkKind != MarkAuto {
+		t.Errorf("after reload: mark_kind=%q, want %q", s.MarkKind, MarkAuto)
+	}
+	if s.HeadSHA != "h1" || s.BaseSHA != "b1" {
+		t.Errorf("after reload: got %+v", s)
+	}
+}
+
 func TestBrainEventsFilter(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("RHODIUM_BRAIN", filepath.Join(dir, "brain.db"))
@@ -749,7 +857,7 @@ func TestBrainEventsFilter(t *testing.T) {
 
 	b.SetScrutiny("acme/web", 1, true)
 	b.SetScrutiny("acme/web", 2, true)
-	b.SetFileReviewed("acme/web", 1, "a.go", "h", "b")
+	b.SetFileReviewed("acme/web", 1, "a.go", "h", "b", MarkAuto)
 
 	// Limit honored.
 	if evs := b.RecentEvents(EventFilter{Limit: 2}); len(evs) != 2 {

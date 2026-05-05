@@ -42,7 +42,7 @@ func cmdMark(args []string, on bool) error {
 	// consistently whether the mark came from the TUI or nvim.
 	for _, p := range b.CachedPRs() {
 		if p.Repo == repo && p.Number == num {
-			_ = b.SetFileReviewed(repo, num, path, p.HeadSHA, p.BaseSHA)
+			_ = b.SetFileReviewed(repo, num, path, p.HeadSHA, p.BaseSHA, brain.MarkUser)
 			break
 		}
 	}

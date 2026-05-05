@@ -38,7 +38,7 @@ type Brain interface {
 	FileReviewedState(repo string, num int, path string) brain.FileReviewState
 	IsScrutinized(repo string, num int) bool
 	SetHunkMarks(repo string, num int, path string, marks map[string]bool) error
-	SetFileReviewed(repo string, num int, path, head, base string) error
+	SetFileReviewed(repo string, num int, path, head, base string, kind brain.MarkKind) error
 	SaveNote(repo string, num int, path string, lineNo int, hash, body string) error
 }
 
@@ -477,7 +477,7 @@ func (m *Model) onCatchUpLoaded(b Brain, msg CatchUpLoadedMsg) tea.Cmd {
 	if deltaFC == nil || deltaFC.Patch == "" {
 		m.catchUpMode = false
 		m.catchUpClass = corediff.ClassB1B2__F1F2
-		b.SetFileReviewed(m.pr.Repo, m.pr.Number, m.file, m.pr.HeadSHA, m.pr.BaseSHA)
+		b.SetFileReviewed(m.pr.Repo, m.pr.Number, m.file, m.pr.HeadSHA, m.pr.BaseSHA, brain.MarkAuto)
 		path := m.file
 		return tea.Batch(
 			statusCmd(fmt.Sprintf("✓ %s: %s (auto-caught-up)", m.file, corediff.ClassB1B2__F1F2)),
@@ -511,7 +511,7 @@ func (m *Model) onDiamondClassified(b Brain, msg DiamondClassifiedMsg) tea.Cmd {
 		if msg.Class.IsForget() {
 			label = "FORGET — base absorbed feature"
 		}
-		b.SetFileReviewed(m.pr.Repo, m.pr.Number, m.file, m.pr.HeadSHA, m.pr.BaseSHA)
+		b.SetFileReviewed(m.pr.Repo, m.pr.Number, m.file, m.pr.HeadSHA, m.pr.BaseSHA, brain.MarkAuto)
 		path := m.file
 		return tea.Batch(
 			statusCmd(fmt.Sprintf("✓ %s: %s (auto-caught-up)", m.file, label)),
@@ -703,7 +703,7 @@ func (m *Model) saveMarks(b Brain) tea.Cmd {
 		return statusCmd("save error: " + err.Error())
 	}
 	if m.pr.HeadSHA != "" {
-		b.SetFileReviewed(m.pr.Repo, m.pr.Number, m.file, m.pr.HeadSHA, m.pr.BaseSHA)
+		b.SetFileReviewed(m.pr.Repo, m.pr.Number, m.file, m.pr.HeadSHA, m.pr.BaseSHA, brain.MarkUser)
 	}
 	if m.allMarked() {
 		path := m.file

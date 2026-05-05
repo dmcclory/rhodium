@@ -255,11 +255,11 @@ func (b *Brain) MarkFullyReviewed(repo string, pr int, goalHead, goalBase string
 
 	for _, path := range allPaths {
 		if _, err := tx.Exec(`
-			INSERT INTO file_reviews (pr_key, path, head_sha, base_sha, reviewed_at)
-			VALUES (?, ?, ?, ?, datetime('now'))
+			INSERT INTO file_reviews (pr_key, path, head_sha, base_sha, mark_kind, reviewed_at)
+			VALUES (?, ?, ?, ?, ?, datetime('now'))
 			ON CONFLICT (pr_key, path) DO UPDATE
-				SET head_sha = excluded.head_sha, base_sha = excluded.base_sha, reviewed_at = excluded.reviewed_at`,
-			key, path, goalHead, goalBase); err != nil {
+				SET head_sha = excluded.head_sha, base_sha = excluded.base_sha, mark_kind = excluded.mark_kind, reviewed_at = excluded.reviewed_at`,
+			key, path, goalHead, goalBase, MarkAuto); err != nil {
 			return err
 		}
 	}

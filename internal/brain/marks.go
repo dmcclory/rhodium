@@ -157,15 +157,31 @@ func (b *Brain) Status(repo string, pr int, fc gh.FileChange) FileStatus {
 	}
 }
 
+// MarkKind records WHY a file was marked reviewed.
+//
+//  - MarkUser: the reviewer actually opened the file and reviewed it.
+//  - MarkAuto: auto-advanced (rev-update, no hunks, all already marked,
+//    or mark-fully-reviewed).
+//
+// Mirrors Iron's Brain.Mark_kind.t (User vs Internal__fully_reviewed).
+type MarkKind string
+
+const (
+	MarkUser MarkKind = "user"
+	MarkAuto MarkKind = "auto"
+)
+
 // FileReviewState holds the base and head SHAs at which a file was last reviewed.
 type FileReviewState struct {
-	HeadSHA string
-	BaseSHA string
+	HeadSHA   string
+	BaseSHA   string
+	MarkKind  MarkKind
 }
 
 // SetFileReviewed records the PR head and base SHAs at which a file was last
 // reviewed. Called alongside mark saves so we know what version the reviewer saw.
-func (b *Brain) SetFileReviewed(repo string, pr int, path, headSHA, baseSHA string) error {
+// markKind distinguishes user-reviewed from auto-advanced files.
+func (b *Brain) SetFileReviewed(repo string, pr int, path, headSHA, baseSHA string, markKind MarkKind) error {
 	key := PRKey(repo, pr)
 	tx, err := b.db.Begin()
 	if err != nil {
@@ -173,13 +189,13 @@ func (b *Brain) SetFileReviewed(repo string, pr int, path, headSHA, baseSHA stri
 	}
 	defer tx.Rollback()
 	if _, err := tx.Exec(`
-		INSERT INTO file_reviews (pr_key, path, head_sha, base_sha, reviewed_at)
-		VALUES (?, ?, ?, ?, datetime('now'))
-		ON CONFLICT (pr_key, path) DO UPDATE SET head_sha = excluded.head_sha, base_sha = excluded.base_sha, reviewed_at = excluded.reviewed_at`,
-		key, path, headSHA, baseSHA); err != nil {
+		INSERT INTO file_reviews (pr_key, path, head_sha, base_sha, mark_kind, reviewed_at)
+		VALUES (?, ?, ?, ?, ?, datetime('now'))
+		ON CONFLICT (pr_key, path) DO UPDATE SET head_sha = excluded.head_sha, base_sha = excluded.base_sha, mark_kind = excluded.mark_kind, reviewed_at = excluded.reviewed_at`,
+		key, path, headSHA, baseSHA, markKind); err != nil {
 		return err
 	}
-	payload := map[string]any{"head_sha": headSHA, "base_sha": baseSHA}
+	payload := map[string]any{"head_sha": headSHA, "base_sha": baseSHA, "mark_kind": markKind}
 	if err := logEvent(tx, "file.reviewed", key, path, payload); err != nil {
 		return err
 	}
@@ -191,23 +207,26 @@ func (b *Brain) SetFileReviewed(repo string, pr int, path, headSHA, baseSHA stri
 func (b *Brain) FileReviewedState(repo string, pr int, path string) FileReviewState {
 	key := PRKey(repo, pr)
 	var s FileReviewState
-	b.db.QueryRow(`SELECT head_sha, base_sha FROM file_reviews WHERE pr_key = ? AND path = ?`, key, path).Scan(&s.HeadSHA, &s.BaseSHA)
+	var mk string
+	b.db.QueryRow(`SELECT head_sha, base_sha, mark_kind FROM file_reviews WHERE pr_key = ? AND path = ?`, key, path).Scan(&s.HeadSHA, &s.BaseSHA, &mk)
+	s.MarkKind = MarkKind(mk)
 	return s
 }
 
 // AllFileReviewedStates returns every (path → FileReviewState) for a given PR.
 func (b *Brain) AllFileReviewedStates(repo string, pr int) map[string]FileReviewState {
 	key := PRKey(repo, pr)
-	rows, err := b.db.Query(`SELECT path, head_sha, base_sha FROM file_reviews WHERE pr_key = ?`, key)
+	rows, err := b.db.Query(`SELECT path, head_sha, base_sha, mark_kind FROM file_reviews WHERE pr_key = ?`, key)
 	if err != nil {
 		return nil
 	}
 	defer rows.Close()
 	out := map[string]FileReviewState{}
 	for rows.Next() {
-		var p string
+		var p, mk string
 		var s FileReviewState
-		if rows.Scan(&p, &s.HeadSHA, &s.BaseSHA) == nil {
+		if rows.Scan(&p, &s.HeadSHA, &s.BaseSHA, &mk) == nil {
+			s.MarkKind = MarkKind(mk)
 			out[p] = s
 		}
 	}

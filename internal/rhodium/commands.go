@@ -161,7 +161,7 @@ func commitAdvances(b *brain.Brain, pr gh.PR, advanced []string) {
 		}
 	}
 	for _, path := range advanced {
-		b.SetFileReviewed(pr.Repo, pr.Number, path, pr.HeadSHA, pr.BaseSHA)
+		b.SetFileReviewed(pr.Repo, pr.Number, path, pr.HeadSHA, pr.BaseSHA, brain.MarkAuto)
 		if session != nil && sessionPaths[path] {
 			b.SetSessionFileDone(session.ID, path, true)
 		}
