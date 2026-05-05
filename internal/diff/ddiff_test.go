@@ -55,3 +55,112 @@ func TestStorySummaryComplex(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+// --- FeatureDDiff tests ---
+
+func TestFeatureDDiffIdentical(t *testing.T) {
+	seg := Segment{F1: "same", F2: "same"}
+	if got := FeatureDDiff(seg); got != nil {
+		t.Errorf("identical: got %d lines, want nil", len(got))
+	}
+}
+
+func TestFeatureDDiffKept(t *testing.T) {
+	seg := Segment{F1: "a\nold\nb", F2: "a\nnew\nb"}
+	lines := FeatureDDiff(seg)
+	// Should have: kept "a", dropped/added for the change, kept "b"
+	keptCount := 0
+	for _, l := range lines {
+		if l.Kind == DDiffKept {
+			keptCount++
+		}
+	}
+	if keptCount != 2 {
+		t.Errorf("got %d kept lines, want 2: %+v", keptCount, lines)
+	}
+}
+
+func TestFeatureDDiffDropped(t *testing.T) {
+	seg := Segment{
+		F1: "keep\ndrop\nkeep2",
+		F2: "keep\nkeep2",
+		B2: "keep\ndifferent\nkeep2",
+	}
+	lines := FeatureDDiff(seg)
+	if len(lines) != 3 {
+		t.Fatalf("got %d lines, want 3: %+v", len(lines), lines)
+	}
+	// "drop" was removed and is NOT in B2 → dropped
+	found := false
+	for _, l := range lines {
+		if l.Kind == DDiffDropped && l.Text == "drop" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected DDiffDropped for 'drop': %+v", lines)
+	}
+}
+
+func TestFeatureDDiffAbsorbed(t *testing.T) {
+	seg := Segment{
+		F1: "keep\nabsorbed\nkeep2",
+		F2: "keep\nkeep2",
+		B2: "keep\nabsorbed\nkeep2", // B2 has it → absorbed
+	}
+	lines := FeatureDDiff(seg)
+	if len(lines) != 3 {
+		t.Fatalf("got %d lines, want 3: %+v", len(lines), lines)
+	}
+	found := false
+	for _, l := range lines {
+		if l.Kind == DDiffAbsorbed && l.Text == "absorbed" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected DDiffAbsorbed for 'absorbed': %+v", lines)
+	}
+}
+
+func TestFeatureDDiffAdded(t *testing.T) {
+	seg := Segment{
+		F1: "old",
+		F2: "old\nnew",
+		B2: "base\nold", // B2 does NOT have "new"
+	}
+	lines := FeatureDDiff(seg)
+	if len(lines) != 2 {
+		t.Fatalf("got %d lines, want 2: %+v", len(lines), lines)
+	}
+	found := false
+	for _, l := range lines {
+		if l.Kind == DDiffAdded && l.Text == "new" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected DDiffAdded for 'new': %+v", lines)
+	}
+}
+
+func TestFeatureDDiffPropagated(t *testing.T) {
+	seg := Segment{
+		F1: "old",
+		F2: "old\npropagated",
+		B2: "base\nold\npropagated", // B2 has "propagated"
+	}
+	lines := FeatureDDiff(seg)
+	if len(lines) != 2 {
+		t.Fatalf("got %d lines, want 2: %+v", len(lines), lines)
+	}
+	found := false
+	for _, l := range lines {
+		if l.Kind == DDiffPropagated && l.Text == "propagated" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected DDiffPropagated for 'propagated': %+v", lines)
+	}
+}

@@ -23,6 +23,13 @@ var (
 	cursorStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
 	resolvedStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("244")) // muted gray
 	storyStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("249")).Italic(true) // muted, italic story line
+
+	ddiffLabelStyle = lipgloss.NewStyle().Bold(true)
+	ddiffDroppedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))  // red
+	ddiffAddedStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("10")) // green
+	ddiffKeptStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))// muted gray
+	ddiffAbsorbedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))// yellow
+	ddiffPropagatedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))// cyan
 )
 
 var cursorIndicator = cursorStyle.Render("▸ ")
@@ -30,6 +37,31 @@ var cursorIndicator = cursorStyle.Render("▸ ")
 // resolvedIndicator is the subtle glyph shown in the gutter when a line
 // has resolved (stale or manually resolved) notes.
 var resolvedIndicator = resolvedStyle.Render("↺")
+
+// renderDDiffLine renders one classified ddiff line with its label prefix.
+func renderDDiffLine(dl corediff.DDiffLine) string {
+	label := ddiffLabelStyle.Render(fmt.Sprintf("[%s]", dl.Kind))
+	var prefix string
+	var lineStyle lipgloss.Style
+	switch dl.Kind {
+	case corediff.DDiffDropped:
+		prefix = "-"
+		lineStyle = ddiffDroppedStyle
+	case corediff.DDiffAdded:
+		prefix = "+"
+		lineStyle = ddiffAddedStyle
+	case corediff.DDiffPropagated:
+		prefix = "+"
+		lineStyle = ddiffPropagatedStyle
+	case corediff.DDiffAbsorbed:
+		prefix = "-"
+		lineStyle = ddiffAbsorbedStyle
+	case corediff.DDiffKept:
+		prefix = " "
+		lineStyle = ddiffKeptStyle
+	}
+	return fmt.Sprintf("  ┃ %s %s%s", label, prefix, lineStyle.Render(dl.Text))
+}
 
 func notesByLine(notes []brain.Note) map[int][]brain.Note {
 	m := map[int][]brain.Note{}
@@ -545,6 +577,14 @@ func renderSegmented(segments []corediff.Segment, viewIdx int, storyMode bool, m
 				b.WriteString(storyStyle.Render(summary) + "\n")
 				lineMap = append(lineMap, 0)
 				outLine++
+			}
+			// Feature ddiff block.
+			if ddiff := corediff.FeatureDDiff(seg); len(ddiff) > 0 {
+				for _, dl := range ddiff {
+					b.WriteString(renderDDiffLine(dl) + "\n")
+					lineMap = append(lineMap, 0)
+					outLine++
+				}
 			}
 		}
 

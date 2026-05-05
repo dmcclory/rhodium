@@ -735,3 +735,56 @@ func TestToggleStoryModeNonSegmented(t *testing.T) {
 		t.Errorf("status: got %q", statusMsg.Text)
 	}
 }
+
+// --- feature ddiff rendering tests ---
+
+func TestRenderSegmentedWithDDiff(t *testing.T) {
+	segs := []corediff.Segment{
+		{
+			Class: corediff.ClassConflict,
+			B1:    "header\nold",
+			F1:    "header\nfeature-v1\nold",
+			B2:    "header\nnew-base",
+			F2:    "header\nfeature-v2\nnew-base",
+		},
+	}
+
+	// Without story mode — no ddiff lines.
+	bodyOff, _, _ := renderSegmented(segs, 0, false, nil, 0, nil, nil, nil, 0, false)
+	if strings.Contains(bodyOff, "[dropped]") || strings.Contains(bodyOff, "[kept]") {
+		t.Errorf("ddiff should not appear when storyMode=false:\n%s", bodyOff)
+	}
+
+	// With story mode — ddiff lines appear.
+	bodyOn, _, _ := renderSegmented(segs, 0, true, nil, 0, nil, nil, nil, 0, false)
+	if !strings.Contains(bodyOn, "[kept]") {
+		t.Errorf("expected [kept] ddiff line:\n%s", bodyOn)
+	}
+	if !strings.Contains(bodyOn, "[dropped]") && !strings.Contains(bodyOn, "[added]") && !strings.Contains(bodyOn, "[absorbed]") && !strings.Contains(bodyOn, "[propagated]") {
+		t.Errorf("expected at least one change label in ddiff:\n%s", bodyOn)
+	}
+}
+
+func TestRenderDDiffLineStyles(t *testing.T) {
+	tests := []struct {
+		kind   corediff.DDiffKind
+		text   string
+		prefix string
+	}{
+		{corediff.DDiffKept, "same", " "},
+		{corediff.DDiffDropped, "gone", "-"},
+		{corediff.DDiffAdded, "new", "+"},
+		{corediff.DDiffAbsorbed, "base", "-"},
+		{corediff.DDiffPropagated, "prop", "+"},
+	}
+	for _, tt := range tests {
+		dl := corediff.DDiffLine{Kind: tt.kind, Text: tt.text}
+		out := renderDDiffLine(dl)
+		if !strings.Contains(out, fmt.Sprintf("[%s]", tt.kind)) {
+			t.Errorf("%s: missing label in %q", tt.kind, out)
+		}
+		if !strings.Contains(out, tt.text) {
+			t.Errorf("%s: missing text %q in %q", tt.kind, tt.text, out)
+		}
+	}
+}
