@@ -36,6 +36,8 @@ func Run(args []string) error {
 		return cmdBrain(args[1:])
 	case "log":
 		return cmdLog(args[1:])
+	case "mark-fully-reviewed":
+		return cmdMarkFullyReviewed(args[1:])
 	case "help", "-h", "--help":
 		printUsage()
 		return nil
@@ -88,6 +90,7 @@ Usage:
   rhodium brain log [--pr ref] [--kind p] [--limit N]  print the brain mutation log, newest first
   rhodium brain show <owner/repo#N>                  review state summary (files, hunks, notes, session)
   rhodium log <owner/repo#N> [--verbose]            per-commit review overlay for a PR
+  rhodium mark-fully-reviewed <owner/repo#N>        mark PR reviewed, no catch-up
 
 Flags:
   --json     emit JSON (notes, todo, state, brain log, brain show, log)

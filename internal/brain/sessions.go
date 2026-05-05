@@ -1,6 +1,9 @@
 package brain
 
-import "database/sql"
+import (
+	"database/sql"
+	"fmt"
+)
 
 // ReviewSession is an ordered snapshot of the diff set the reviewer is
 // stepping through, kept stable across a single reviewing pass even if the
@@ -223,6 +226,53 @@ func (b *Brain) SessionFiles(sessionID int64) []SessionFile {
 		}
 	}
 	return out
+}
+
+// MarkFullyReviewed advances the brain to the current goal (head/base) for
+// every path in the PR. This is the rhodium equivalent of Iron's
+// mark_fully_reviewed: the reviewer declares "I'm done" and the brain
+// catches up — no questions asked. Any active session is completed first.
+func (b *Brain) MarkFullyReviewed(repo string, pr int, goalHead, goalBase string, allPaths []string) error {
+	key := PRKey(repo, pr)
+
+	// Complete any active session for this PR.
+	existing := b.ActiveSession(repo, pr)
+	if existing != nil {
+		if err := b.CompleteSession(existing.ID); err != nil {
+			return fmt.Errorf("completing active session: %w", err)
+		}
+	}
+
+	if len(allPaths) == 0 {
+		return nil
+	}
+
+	tx, err := b.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	for _, path := range allPaths {
+		if _, err := tx.Exec(`
+			INSERT INTO file_reviews (pr_key, path, head_sha, base_sha, reviewed_at)
+			VALUES (?, ?, ?, ?, datetime('now'))
+			ON CONFLICT (pr_key, path) DO UPDATE
+				SET head_sha = excluded.head_sha, base_sha = excluded.base_sha, reviewed_at = excluded.reviewed_at`,
+			key, path, goalHead, goalBase); err != nil {
+			return err
+		}
+	}
+
+	if err := logEvent(tx, "brain.fully_reviewed", key, "", map[string]any{
+		"goal_head": goalHead,
+		"goal_base": goalBase,
+		"files":     len(allPaths),
+	}); err != nil {
+		return err
+	}
+
+	return tx.Commit()
 }
 
 // AllActiveSessions returns every currently-active session across PRs.

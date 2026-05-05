@@ -668,6 +668,76 @@ func TestBrainEventsSessions(t *testing.T) {
 	}
 }
 
+func TestBrainMarkFullyReviewed(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("RHODIUM_BRAIN", filepath.Join(dir, "brain.db"))
+
+	b, err := LoadBrain()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+
+	hunks := diff.ParseHunks(samplePatch)
+	if len(hunks) != 2 {
+		t.Fatalf("expected 2 hunks, got %d", len(hunks))
+	}
+
+	// Mark src/main.go as fully reviewed.
+	marks := map[string]bool{hunks[0].Hash: true, hunks[1].Hash: true}
+	if err := b.SetHunkMarks("acme/web", 42, "src/main.go", marks); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create an active session to ensure it gets completed.
+	files := []SessionFile{{Path: "src/main.go"}, {Path: "lib/util.go"}}
+	_, err = b.CreateSession("acme/web", 42, "oldHead", "oldBase", "oldHead", "oldBase", files)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	allPaths := []string{"src/main.go", "lib/util.go"}
+
+	if err := b.MarkFullyReviewed("acme/web", 42, "goalHead", "goalBase", allPaths); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both files should have file_reviews advanced to goal.
+	for _, path := range allPaths {
+		s := b.FileReviewedState("acme/web", 42, path)
+		if s.HeadSHA != "goalHead" || s.BaseSHA != "goalBase" {
+			t.Errorf("%s: got head=%q base=%q, want goalHead/goalBase", path, s.HeadSHA, s.BaseSHA)
+		}
+	}
+
+	// Prior session was completed.
+	if active := b.ActiveSession("acme/web", 42); active != nil {
+		t.Error("active session should have been completed")
+	}
+	// No new session was created — the user said "I'm done".
+	all := b.AllActiveSessions()
+	for _, s := range all {
+		if s.PRKey == "acme/web#42" {
+			t.Error("no new session should have been created for this PR")
+		}
+	}
+
+	// Event was logged.
+	evs := b.RecentEvents(EventFilter{KindPrefix: "brain.fully_reviewed", Limit: 1})
+	if len(evs) != 1 {
+		t.Fatalf("expected 1 brain.fully_reviewed event, got %d", len(evs))
+	}
+	p := eventPayload(t, evs[0].Payload)
+	if p["files"] != float64(2) {
+		t.Errorf("event payload: %v", p)
+	}
+
+	// Idempotent: call again with no files → no error.
+	if err := b.MarkFullyReviewed("acme/web", 42, "goalHead2", "goalBase2", nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestBrainEventsFilter(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("RHODIUM_BRAIN", filepath.Join(dir, "brain.db"))
