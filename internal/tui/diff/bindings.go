@@ -104,6 +104,16 @@ func (m *Model) navBindings() []keys.Binding {
 			},
 		},
 		{
+			Name: "next-segment", Keys: []string{"N"},
+			Desc: "next segment", Group: "Navigate",
+			Action: func() tea.Cmd { return m.nextSegment() },
+		},
+		{
+			Name: "prev-segment", Keys: []string{"P"},
+			Desc: "prev segment", Group: "Navigate",
+			Action: func() tea.Cmd { return m.prevSegment() },
+		},
+		{
 			Name: "cursor-down", Keys: []string{"j"},
 			Desc: "cursor down", Group: "Navigate",
 			Action: func() tea.Cmd { m.moveCursor(1); return nil },
@@ -173,7 +183,7 @@ func (m *Model) noteBindings() []keys.Binding {
 	}
 }
 
-// viewBindings: cycle segment, catch-up toggle, open-editor.
+// viewBindings: cycle segment, catch-up toggle, open-editor, story mode.
 func (m *Model) viewBindings(b Brain) []keys.Binding {
 	return []keys.Binding{
 		{
@@ -185,6 +195,11 @@ func (m *Model) viewBindings(b Brain) []keys.Binding {
 			Name: "catch-up-toggle", Keys: []string{"d"},
 			Desc: "toggle catch-up / full diff", Group: "View",
 			Action: func() tea.Cmd { return m.toggleCatchUp(b) },
+		},
+		{
+			Name: "story-mode", Keys: []string{"s"},
+			Desc: "toggle story summary", Group: "View",
+			Action: func() tea.Cmd { return m.toggleStoryMode() },
 		},
 		{
 			Name: "open-editor", Keys: []string{"o"},
@@ -318,6 +333,19 @@ func (m *Model) cycleSegmentView() tea.Cmd {
 	m.redraw()
 	m.jumpToHunk()
 	return statusCmd(fmt.Sprintf("view %d/%d", (m.segmentViewIdx%maxV)+1, maxV))
+}
+
+func (m *Model) toggleStoryMode() tea.Cmd {
+	if !m.segmented || len(m.segments) == 0 {
+		return statusCmd("story mode only available for segmented diffs")
+	}
+	m.storyMode = !m.storyMode
+	m.redraw()
+	m.jumpToHunk()
+	if m.storyMode {
+		return statusCmd("story mode on  (s: toggle)")
+	}
+	return statusCmd("story mode off  (s: toggle)")
 }
 
 func (m *Model) toggleCatchUp(b Brain) tea.Cmd {

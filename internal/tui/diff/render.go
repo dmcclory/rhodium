@@ -22,6 +22,7 @@ var (
 	noteStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
 	cursorStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
 	resolvedStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("244")) // muted gray
+	storyStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("249")).Italic(true) // muted, italic story line
 )
 
 var cursorIndicator = cursorStyle.Render("▸ ")
@@ -504,7 +505,7 @@ func splitLinesCount(s string) int {
 // flat renderHunks path when the diff is in segmented (catch-up) mode.
 // Returns the rendered body, per-hunk output-line offsets (including
 // segment headers), and the output→file-line map.
-func renderSegmented(segments []corediff.Segment, viewIdx int, marks map[string]bool, focusedHunkIdx int, notes []brain.Note, resolvedNotes []brain.Note, ghInline []gh.Comment, cursorLine int, showingResolved bool) (string, []int, []int) {
+func renderSegmented(segments []corediff.Segment, viewIdx int, storyMode bool, marks map[string]bool, focusedHunkIdx int, notes []brain.Note, resolvedNotes []brain.Note, ghInline []gh.Comment, cursorLine int, showingResolved bool) (string, []int, []int) {
 	var b strings.Builder
 	var lineMap []int
 	hunkLines := make([]int, 0, len(segments)*2)
@@ -537,6 +538,15 @@ func renderSegmented(segments []corediff.Segment, viewIdx int, marks map[string]
 		hunkLines = append(hunkLines, outLine)
 		outLine++
 		globalIdx++
+
+		// Story summary line.
+		if storyMode {
+			if summary := corediff.StorySummary(seg); summary != "" {
+				b.WriteString(storyStyle.Render(summary) + "\n")
+				lineMap = append(lineMap, 0)
+				outLine++
+			}
+		}
 
 		// If no diff hunks, skip the body but still account for the To
 		// lines (they're context for subsequent segments).

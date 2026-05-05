@@ -158,6 +158,10 @@ type Model struct {
 	segmentViewIdx int
 	segmented      bool
 
+	// Story mode: when true, shows a narrative summary line below each
+	// segment header (f1 line count, dropped/added by rebase, f2 count).
+	storyMode bool
+
 	// Note input state.
 	noting       bool
 	noteLineNo   int
@@ -283,7 +287,22 @@ func (m *Model) Footer() string {
 				if maxV > 1 {
 					cycleHint = fmt.Sprintf("  v: cycle view (%d/%d)", (m.segmentViewIdx%maxV)+1, maxV)
 				}
-				modeHint = fmt.Sprintf("  [catch-up %s: %d segments since %s]  d: full diff%s", m.catchUpClass, len(m.segments), shortSHA(m.catchUpOldHead), cycleHint)
+				// Segment progress indicator
+				segProgress := ""
+				if m.hunkIdx >= 0 && m.hunkIdx < len(m.hunks) {
+					segIdx := segIdxForHunk(m.hunks, m.hunkIdx)
+					if segIdx < len(m.segments) {
+						seg := m.segments[segIdx]
+						views := seg.Class.Views()
+						viewLabel := ""
+						if len(views) > 0 {
+							view := views[m.segmentViewIdx%len(views)]
+							viewLabel = fmt.Sprintf(" · %s→%s", view.From, view.To)
+						}
+						segProgress = fmt.Sprintf("  [segment %d/%d · %s%s]", segIdx+1, len(m.segments), seg.Class, viewLabel)
+					}
+				}
+				modeHint = fmt.Sprintf("%s  N/P: segments  d: full diff%s", segProgress, cycleHint)
 			} else {
 				modeHint = fmt.Sprintf("  [catch-up %s since %s]  d: full diff", m.catchUpClass, shortSHA(m.catchUpOldHead))
 			}
@@ -625,7 +644,7 @@ func (m *Model) redraw() {
 	if m.blob != "" && !m.segmented {
 		body, lines, lmap = renderFullFile(m.blob, m.hunks, m.marks, m.hunkIdx, m.notes, m.resolvedNotes, m.ghInline, m.cursorLine, m.showingResolved)
 	} else if m.segmented {
-		body, lines, lmap = renderSegmented(m.segments, m.segmentViewIdx, m.marks, m.hunkIdx, m.notes, m.resolvedNotes, m.ghInline, m.cursorLine, m.showingResolved)
+		body, lines, lmap = renderSegmented(m.segments, m.segmentViewIdx, m.storyMode, m.marks, m.hunkIdx, m.notes, m.resolvedNotes, m.ghInline, m.cursorLine, m.showingResolved)
 	} else {
 		body, lines, lmap = renderHunks(m.hunks, m.marks, m.hunkIdx, m.notes, m.resolvedNotes, m.ghInline, m.cursorLine, m.showingResolved)
 	}
@@ -644,13 +663,12 @@ func (m *Model) jumpToHunk() {
 	m.vp.SetYOffset(target)
 }
 
-// segIdxForHunk returns the segment index for the hunk at position i
-// in the flat hunks list produced by SegmentHunks. Each synthetic
-// segment-header hunk advances the counter; markable hunks inherit the
-// current segment index.
+// segIdxForHunk returns the 0-based segment index for the hunk at
+// position i in the flat hunks list. Synthetic segment-header hunks
+// act as boundaries; each header increments the counter.
 func segIdxForHunk(hunks []corediff.Hunk, i int) int {
-	segIdx := 0
-	for j := 0; j < i; j++ {
+	segIdx := -1
+	for j := 0; j <= i; j++ {
 		if !hunks[j].IsMarkable() {
 			segIdx++
 		}
@@ -732,6 +750,66 @@ func (m *Model) stepHunk(delta int) {
 		return
 	}
 	m.hunkIdx = next
+}
+
+// jumpSegment moves m.hunkIdx to the first markable hunk of the next
+// (delta=+1) or previous (delta=−1) segment. Falls back to stepHunk
+// when not in segmented mode or when already at the boundary.
+func (m *Model) jumpSegment(delta int) tea.Cmd {
+	if !m.segmented || len(m.segments) == 0 {
+		m.stepHunk(delta)
+		m.redraw()
+		m.jumpToHunk()
+		return nil
+	}
+	step := 1
+	if delta < 0 {
+		step = -1
+	}
+	curSeg := segIdxForHunk(m.hunks, m.hunkIdx)
+
+	for i := m.hunkIdx + step; i >= 0 && i < len(m.hunks); i += step {
+		if !m.hunks[i].IsMarkable() {
+			continue
+		}
+		hSeg := segIdxForHunk(m.hunks, i)
+		if (delta > 0 && hSeg > curSeg) || (delta < 0 && hSeg < curSeg) {
+			m.hunkIdx = i
+			m.redraw()
+			m.jumpToHunk()
+			return m.segmentStatusCmd()
+		}
+	}
+
+	// Hit the file boundary without crossing a segment — advance
+	// within the current segment instead.
+	m.stepHunk(delta)
+	m.redraw()
+	m.jumpToHunk()
+	return nil
+}
+
+func (m *Model) nextSegment() tea.Cmd  { return m.jumpSegment(1) }
+func (m *Model) prevSegment() tea.Cmd  { return m.jumpSegment(-1) }
+
+// segmentStatusCmd returns a StatusMsg showing the current segment
+// progress when in segmented mode.
+func (m *Model) segmentStatusCmd() tea.Cmd {
+	if !m.segmented || len(m.segments) == 0 || m.hunkIdx < 0 {
+		return nil
+	}
+	segIdx := segIdxForHunk(m.hunks, m.hunkIdx)
+	if segIdx >= len(m.segments) {
+		return nil
+	}
+	seg := m.segments[segIdx]
+	views := seg.Class.Views()
+	viewLabel := ""
+	if len(views) > 0 {
+		view := views[m.segmentViewIdx%len(views)]
+		viewLabel = fmt.Sprintf("%s→%s", view.From, view.To)
+	}
+	return statusCmd(fmt.Sprintf("segment %d/%d · %s · %s", segIdx+1, len(m.segments), seg.Class, viewLabel))
 }
 
 // currentSegmentView returns the View the hunk at hunkIdx is being

@@ -1,10 +1,12 @@
 package diff
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"rhodium/internal/brain"
+	"rhodium/internal/gh"
 
 	corediff "rhodium/internal/diff"
 )
@@ -189,7 +191,7 @@ func TestRenderSegmentedSingleSegment(t *testing.T) {
 		},
 	}
 
-	body, hunkLines, lineMap := renderSegmented(segs, 0, nil, 0, nil, nil, nil, 0, false)
+	body, hunkLines, lineMap := renderSegmented(segs, 0, false, nil, 0, nil, nil, nil, 0, false)
 
 	if !strings.Contains(body, "== segment 1/1") {
 		t.Errorf("expected segment header in output:\n%s", body)
@@ -226,7 +228,7 @@ func TestRenderSegmentedMultipleSegments(t *testing.T) {
 		},
 	}
 
-	body, _, _ := renderSegmented(segs, 0, nil, 0, nil, nil, nil, 0, false)
+	body, _, _ := renderSegmented(segs, 0, false, nil, 0, nil, nil, nil, 0, false)
 
 	// Should have two segment headers
 	count := strings.Count(body, "== segment")
@@ -269,7 +271,7 @@ func TestRenderSegmentedLineOffset(t *testing.T) {
 	}
 	// Segment 0: from "l1\nl2\nl3" to "l1\nl2\nl3\nl4"
 	// The diff should start at +4,1 (new line 4)
-	body, _, _ := renderSegmented(segs, 0, nil, 0, nil, nil, nil, 0, false)
+	body, _, _ := renderSegmented(segs, 0, false, nil, 0, nil, nil, nil, 0, false)
 
 	// Segment 1 has no changes, so no hunks. But we should still see the header.
 	if !strings.Contains(body, "== segment 2/2") {
@@ -289,8 +291,8 @@ func TestRenderSegmentedViewCycling(t *testing.T) {
 		},
 	}
 
-	body0, _, _ := renderSegmented(segs, 0, nil, 0, nil, nil, nil, 0, false)
-	body1, _, _ := renderSegmented(segs, 1, nil, 0, nil, nil, nil, 0, false)
+	body0, _, _ := renderSegmented(segs, 0, false, nil, 0, nil, nil, nil, 0, false)
+	body1, _, _ := renderSegmented(segs, 1, false, nil, 0, nil, nil, nil, 0, false)
 
 	// View 0: b2→f2 ("new diff")
 	if !strings.Contains(body0, "b2→f2") {
@@ -326,7 +328,7 @@ func TestRenderSegmentedHiddenSegmentsSkipped(t *testing.T) {
 		},
 	}
 
-	body, _, _ := renderSegmented(segs, 0, nil, 0, nil, nil, nil, 0, false)
+	body, _, _ := renderSegmented(segs, 0, false, nil, 0, nil, nil, nil, 0, false)
 
 	// Only segment 2 should appear (segment 1 is hidden)
 	if strings.Contains(body, "segment 1") {
@@ -345,7 +347,7 @@ func TestRenderSegmentedHiddenSegmentsSkipped(t *testing.T) {
 func TestRenderSegmentedEmptySegments(t *testing.T) {
 	segs := []corediff.Segment{}
 
-	body, hunkLines, lineMap := renderSegmented(segs, 0, nil, 0, nil, nil, nil, 0, false)
+	body, hunkLines, lineMap := renderSegmented(segs, 0, false, nil, 0, nil, nil, nil, 0, false)
 
 	if body != "" {
 		t.Errorf("expected empty body for no segments, got:\n%s", body)
@@ -373,7 +375,7 @@ func TestRenderSegmentedWithNotes(t *testing.T) {
 		{LineNo: 3, Body: "test note"},
 	}
 
-	body, _, _ := renderSegmented(segs, 0, nil, 0, notes, nil, nil, 0, false)
+	body, _, _ := renderSegmented(segs, 0, false, nil, 0, notes, nil, nil, 0, false)
 
 	if !strings.Contains(body, "test note") {
 		t.Errorf("expected note body in output:\n%s", body)
@@ -402,9 +404,9 @@ func TestRenderSegmentedFocusedSegmentHeader(t *testing.T) {
 	}
 
 	// Focused hunk is at index 0 (the first segment header)
-	body0, _, _ := renderSegmented(segs, 0, nil, 0, nil, nil, nil, 0, false)
+	body0, _, _ := renderSegmented(segs, 0, false, nil, 0, nil, nil, nil, 0, false)
 	// Focused hunk is at index 2 (second segment header: 0=header, 1=hunk, 2=header)
-	body2, _, _ := renderSegmented(segs, 0, nil, 2, nil, nil, nil, 0, false)
+	body2, _, _ := renderSegmented(segs, 0, false, nil, 2, nil, nil, nil, 0, false)
 
 	// Both should render both segments
 	if !strings.Contains(body0, "== segment 1/2") {
@@ -412,5 +414,324 @@ func TestRenderSegmentedFocusedSegmentHeader(t *testing.T) {
 	}
 	if !strings.Contains(body2, "== segment 2/2") {
 		t.Errorf("expected segment 2 header:\n%s", body2)
+	}
+}
+
+// --- segment navigation tests ---
+
+func TestJumpSegmentNext(t *testing.T) {
+	segs := []corediff.Segment{
+		{
+			Class: corediff.ClassB1B2F1,
+			B1:    "a", F1: "a", B2: "a", F2: "a\nx",
+		},
+		{
+			Class: corediff.ClassB1B2F1,
+			B1:    "b", F1: "b", B2: "b", F2: "b\ny",
+		},
+		{
+			Class: corediff.ClassB1B2F1,
+			B1:    "c", F1: "c", B2: "c", F2: "c\nz",
+		},
+	}
+	m := &Model{
+		segmented: true,
+		segments:  segs,
+		hunks:     corediff.SegmentHunks(segs, 0),
+		hunkIdx:   1, // first hunk of segment 0
+	}
+	m.Resize(80, 24)
+
+	// Jump to next segment.
+	m.jumpSegment(1)
+
+	// Should be at the first hunk of segment 1.
+	nextSeg := segIdxForHunk(m.hunks, m.hunkIdx)
+	if nextSeg != 1 {
+		t.Errorf("after nextSegment: segIdx=%d, want 1", nextSeg)
+	}
+}
+
+func TestJumpSegmentPrev(t *testing.T) {
+	segs := []corediff.Segment{
+		{Class: corediff.ClassB1B2F1, B1: "a", F1: "a", B2: "a", F2: "a\nx"},
+		{Class: corediff.ClassB1B2F1, B1: "b", F1: "b", B2: "b", F2: "b\ny"},
+		{Class: corediff.ClassB1B2F1, B1: "c", F1: "c", B2: "c", F2: "c\nz"},
+	}
+	m := &Model{
+		segmented: true,
+		segments:  segs,
+		hunks:     corediff.SegmentHunks(segs, 0),
+		hunkIdx:   4, // first hunk of segment 2
+	}
+	m.Resize(80, 24)
+
+	// Jump to previous segment.
+	m.jumpSegment(-1)
+
+	prevSeg := segIdxForHunk(m.hunks, m.hunkIdx)
+	if prevSeg != 1 {
+		t.Errorf("after prevSegment: segIdx=%d, want 1", prevSeg)
+	}
+}
+
+func TestJumpSegmentNextAtBoundary(t *testing.T) {
+	segs := []corediff.Segment{
+		{Class: corediff.ClassB1B2F1, B1: "a", F1: "a", B2: "a", F2: "a\nx"},
+		{Class: corediff.ClassB1B2F1, B1: "b", F1: "b", B2: "b", F2: "b\ny"},
+	}
+	m := &Model{
+		segmented: true,
+		segments:  segs,
+		hunks:     corediff.SegmentHunks(segs, 0),
+		hunkIdx:   2, // first (only) hunk of segment 1 (last segment)
+	}
+	m.Resize(80, 24)
+
+	// On the last segment, nextSegment should stay within segment.
+	m.jumpSegment(1)
+
+	seg := segIdxForHunk(m.hunks, m.hunkIdx)
+	if seg != 1 {
+		t.Errorf("at boundary: segIdx=%d, want 1 (stay on last segment)", seg)
+	}
+}
+
+func TestJumpSegmentPrevAtBoundary(t *testing.T) {
+	segs := []corediff.Segment{
+		{Class: corediff.ClassB1B2F1, B1: "a", F1: "a", B2: "a", F2: "a\nx"},
+		{Class: corediff.ClassB1B2F1, B1: "b", F1: "b", B2: "b", F2: "b\ny"},
+	}
+	m := &Model{
+		segmented: true,
+		segments:  segs,
+		hunks:     corediff.SegmentHunks(segs, 0),
+		hunkIdx:   1, // first hunk of segment 0
+	}
+	m.Resize(80, 24)
+
+	// On the first segment, prevSegment should stay within segment.
+	m.jumpSegment(-1)
+
+	seg := segIdxForHunk(m.hunks, m.hunkIdx)
+	if seg != 0 {
+		t.Errorf("at boundary: segIdx=%d, want 0 (stay on first segment)", seg)
+	}
+}
+
+func TestJumpSegmentNonSegmented(t *testing.T) {
+	// Non-segmented hunks from a plain patch.
+	m := &Model{
+		segmented: false,
+		hunks: []corediff.Hunk{
+			{Header: "@@ -1,2 +1,3 @@", BodyLines: []string{" a", "+b", "+c"}, Hash: "abc"},
+			{Header: "@@ -5,2 +6,3 @@", BodyLines: []string{" d", "+e", "+f"}, Hash: "def"},
+		},
+		hunkIdx: 0,
+	}
+	m.Resize(80, 24)
+
+	m.jumpSegment(1)
+
+	if m.hunkIdx != 1 {
+		t.Errorf("non-segmented nextSegment: hunkIdx=%d, want 1", m.hunkIdx)
+	}
+}
+
+func TestFooterSegmentProgress(t *testing.T) {
+	segs := []corediff.Segment{
+		{Class: corediff.ClassB1B2F1, B1: "a", F1: "a", B2: "a", F2: "a\nx"},
+		{Class: corediff.ClassConflict, B1: "b", F1: "b", B2: "b\nold", F2: "b\nnew"},
+	}
+	m := &Model{
+		segmented:     true,
+		segments:      segs,
+		hunks:         corediff.SegmentHunks(segs, 0),
+		hunkIdx:       2, // first hunk of segment 1
+		catchUpMode:   true,
+		catchUpOldHead: "abc1234",
+		catchUpClass:  corediff.ClassConflict,
+	}
+	m.Resize(80, 24)
+	m.redraw()
+
+	footer := m.Footer()
+	if !strings.Contains(footer, "segment 2/2") {
+		t.Errorf("footer missing segment progress:\n%s", footer)
+	}
+	if !strings.Contains(footer, "conflict") {
+		t.Errorf("footer missing class label:\n%s", footer)
+	}
+	if !strings.Contains(footer, "N/P") {
+		t.Errorf("footer missing N/P hint:\n%s", footer)
+	}
+}
+
+func TestSegmentStatusCmd(t *testing.T) {
+	segs := []corediff.Segment{
+		{Class: corediff.ClassConflict, B1: "a", F1: "a", B2: "a", F2: "a\nx"},
+	}
+	m := &Model{
+		segmented: true,
+		segments:  segs,
+		hunks:     corediff.SegmentHunks(segs, 0),
+		hunkIdx:   1,
+	}
+
+	cmd := m.segmentStatusCmd()
+	if cmd == nil {
+		t.Fatal("expected non-nil status cmd")
+	}
+	msg := cmd()
+	statusMsg, ok := msg.(StatusMsg)
+	if !ok {
+		t.Fatalf("expected StatusMsg, got %T", msg)
+	}
+	if !strings.Contains(statusMsg.Text, "segment 1/1") {
+		t.Errorf("status missing segment info: %s", statusMsg.Text)
+	}
+	if !strings.Contains(statusMsg.Text, "conflict") {
+		t.Errorf("status missing class: %s", statusMsg.Text)
+	}
+}
+
+// --- story mode tests ---
+
+func TestRenderSegmentedWithStoryMode(t *testing.T) {
+	segs := []corediff.Segment{
+		{
+			Class: corediff.ClassConflict,
+			B1:    "header\nold",
+			F1:    "header\nfeature-v1\nold",
+			B2:    "header\nnew-base",
+			F2:    "header\nfeature-v2\nnew-base",
+		},
+	}
+
+	// Without story mode — no story line.
+	bodyOff, _, _ := renderSegmented(segs, 0, false, nil, 0, nil, nil, nil, 0, false)
+	if strings.Contains(bodyOff, "story:") {
+		t.Errorf("story line should not appear when storyMode=false:\n%s", bodyOff)
+	}
+
+	// With story mode — story line appears.
+	bodyOn, _, _ := renderSegmented(segs, 0, true, nil, 0, nil, nil, nil, 0, false)
+	if !strings.Contains(bodyOn, "story:") {
+		t.Errorf("story line should appear when storyMode=true:\n%s", bodyOn)
+	}
+	if !strings.Contains(bodyOn, "f1 had") {
+		t.Errorf("story line should show f1 line count:\n%s", bodyOn)
+	}
+	if !strings.Contains(bodyOn, "f2 has") {
+		t.Errorf("story line should show f2 line count:\n%s", bodyOn)
+	}
+}
+
+func TestRenderSegmentedStoryModeWithMultipleSegments(t *testing.T) {
+	segs := []corediff.Segment{
+		{
+			Class: corediff.ClassB1B2F1,
+			B1:    "a", F1: "a", B2: "a", F2: "a\nnew",
+		},
+		{
+			Class: corediff.ClassConflict,
+			B1:    "x\ny", F1: "x\nold\ny", B2: "x\nbase\ny", F2: "x\nnew\ny",
+		},
+	}
+
+	body, _, _ := renderSegmented(segs, 0, true, nil, 0, nil, nil, nil, 0, false)
+
+	// Both segments should have story lines.
+	count := strings.Count(body, "story:")
+	if count != 2 {
+		t.Errorf("expected 2 story lines, got %d in:\n%s", count, body)
+	}
+}
+
+func TestRenderSegmentedStoryModeSkippedWhenEmpty(t *testing.T) {
+	// Segment where f1 == f2 (no rebase delta) — story summary returns
+	// empty string, so no line should be rendered.
+	segs := []corediff.Segment{
+		{
+			Class: corediff.ClassB1B2,
+			B1:    "a", F1: "a", B2: "a", F2: "a",
+		},
+	}
+
+	body, _, _ := renderSegmented(segs, 0, true, nil, 0, nil, nil, nil, 0, false)
+
+	if strings.Contains(body, "story:") {
+		t.Errorf("story line should not appear for identical f1/f2:\n%s", body)
+	}
+}
+
+func TestToggleStoryMode(t *testing.T) {
+	segs := []corediff.Segment{
+		{Class: corediff.ClassConflict, B1: "a", F1: "a\nold", B2: "a", F2: "a\nnew"},
+	}
+	m := &Model{
+		pr:          &gh.PR{Repo: "r", Number: 1, HeadSHA: "h", BaseSHA: "b"},
+		file:        "f.go",
+		segmented:   true,
+		segments:    segs,
+		hunks:       corediff.SegmentHunks(segs, 0),
+		catchUpMode: true,
+		storyMode:   false,
+	}
+	m.Resize(80, 24)
+
+	// Initially off.
+	if m.storyMode {
+		t.Error("storyMode should start false")
+	}
+
+	// Toggle on.
+	cmd := m.toggleStoryMode()
+	if !m.storyMode {
+		t.Error("storyMode should be true after toggle")
+	}
+	if cmd == nil {
+		t.Fatal("expected status cmd")
+	}
+	msg := cmd()
+	statusMsg, ok := msg.(StatusMsg)
+	if !ok {
+		t.Fatalf("expected StatusMsg, got %T", msg)
+	}
+	if !strings.Contains(statusMsg.Text, "story mode on") {
+		t.Errorf("status: got %q", statusMsg.Text)
+	}
+
+	// Toggle off.
+	cmd = m.toggleStoryMode()
+	if m.storyMode {
+		t.Error("storyMode should be false after second toggle")
+	}
+	msg = cmd()
+	statusMsg, ok = msg.(StatusMsg)
+	if !ok {
+		t.Fatalf("expected StatusMsg, got %T", msg)
+	}
+	if !strings.Contains(statusMsg.Text, "story mode off") {
+		t.Errorf("status: got %q", statusMsg.Text)
+	}
+}
+
+func TestToggleStoryModeNonSegmented(t *testing.T) {
+	m := &Model{segmented: false}
+	cmd := m.toggleStoryMode()
+	if m.storyMode {
+		t.Error("storyMode should not change when not segmented")
+	}
+	if cmd == nil {
+		t.Fatal("expected status cmd")
+	}
+	msg := cmd()
+	statusMsg, ok := msg.(StatusMsg)
+	if !ok {
+		t.Fatalf("expected StatusMsg, got %T", msg)
+	}
+	if !strings.Contains(statusMsg.Text, "only available") {
+		t.Errorf("status: got %q", statusMsg.Text)
 	}
 }
