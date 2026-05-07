@@ -44,6 +44,10 @@ func Run(args []string) error {
 		return cmdBrainForget(args[1:])
 	case "log":
 		return cmdLog(args[1:])
+	case "repos":
+		return cmdRepos(args[1:])
+	case "prs":
+		return cmdPRs(args[1:])
 	case "mark-fully-reviewed":
 		return cmdMarkFullyReviewed(args[1:])
 	case "help", "-h", "--help":
@@ -102,12 +106,14 @@ Usage:
   rhodium brain clear <owner/repo#N>                drop all marks + file_reviews for a PR, keep notes
   rhodium brain forget <owner/repo#N> <path>        drop marks for one file
   rhodium log <owner/repo#N> [--verbose]            per-commit review overlay for a PR
+  rhodium repos [--sync]                            list cached repos with PR counts
+  rhodium prs [owner/repo] [--sync]         list PRs for a repo (or all repos if omitted)
   rhodium mark-fully-reviewed <owner/repo#N>        mark PR reviewed, no catch-up
 
 Flags:
-  --json     emit JSON (notes, todo, state, brain log, brain show, log)
-  --sync     (todo only) refresh the PR cache from GitHub before printing
-  --all      (notes only) include resolved notes
+  --json     emit JSON (notes, todo, state, brain log, brain show, log, prs)
+  --sync     refresh the PR cache from GitHub before printing (todo, repos, prs)
+  --all      (notes) include resolved notes
   --urgency  (note only) set urgency: now, soon, someday
   --assignee (note only) set assignee
   --pr       (brain log) filter to one PR (owner/repo#N)
