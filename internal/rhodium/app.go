@@ -226,6 +226,7 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, router.Navigate(router.RouteFiles)
 	case tuidiff.FileMarkedDoneMsg:
 		a.markSessionFileDone(m.Path)
+		a.rebuildPRs()
 		return a, nil
 	case tuidiff.StatusMsg:
 		a.status.msg = m.Text
@@ -563,6 +564,8 @@ func (a *app) buildTodoItem(pr gh.PR) *todo.Item {
 		it.Tags = append(it.Tags, "catch-up")
 		it.Done = cu.FilesDone
 		it.Total = cu.FilesTotal
+		it.LinesDone = cu.LinesDone
+		it.LinesTotal = cu.LinesTotal
 	}
 	if !touched && cu == nil {
 		it.Tags = append(it.Tags, "unseen")

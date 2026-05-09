@@ -120,7 +120,7 @@ func cmdState(args []string) error {
 				Header:  h.Header,
 				OldLine: oldL,
 				NewLine: newL,
-				Marked:  marks[h.Hash],
+				Marked:  marks[h.Hash] > 0,
 			})
 		}
 		out.Files = append(out.Files, stateFile{

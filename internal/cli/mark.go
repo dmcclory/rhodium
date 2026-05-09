@@ -30,7 +30,10 @@ func cmdMark(args []string, on bool) error {
 
 	marks := b.HunkMarks(repo, num, path)
 	if on {
-		marks[hash] = true
+		// CLI doesn't have patch context, so we store a sentinel line count
+		// of 1. Session line tracking will pick up the real count once the
+		// TUI saves marks (which computes from hunk body lines).
+		marks[hash] = 1
 	} else {
 		delete(marks, hash)
 	}

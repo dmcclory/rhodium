@@ -136,7 +136,7 @@ func TestCmdBrainClear(t *testing.T) {
 	b := newTestBrain(t)
 	defer b.Close()
 
-	b.SetHunkMarks("acme/web", 42, "a.go", map[string]bool{"h1": true})
+	b.SetHunkMarks("acme/web", 42, "a.go", map[string]int{"h1": 1})
 	b.SetFileReviewed("acme/web", 42, "a.go", "head1", "base1", brain.MarkUser)
 	b.SaveNote("acme/web", 42, "a.go", 10, "h1", "preserve me", "")
 
@@ -171,9 +171,9 @@ func TestCmdBrainForget(t *testing.T) {
 	b := newTestBrain(t)
 	defer b.Close()
 
-	b.SetHunkMarks("acme/web", 42, "a.go", map[string]bool{"h1": true})
+	b.SetHunkMarks("acme/web", 42, "a.go", map[string]int{"h1": 1})
 	b.SetFileReviewed("acme/web", 42, "a.go", "head1", "base1", brain.MarkUser)
-	b.SetHunkMarks("acme/web", 42, "b.go", map[string]bool{"h2": true})
+	b.SetHunkMarks("acme/web", 42, "b.go", map[string]int{"h2": 1})
 	b.SetFileReviewed("acme/web", 42, "b.go", "head1", "base1", brain.MarkUser)
 	b.SaveNote("acme/web", 42, "a.go", 10, "h1", "preserve me", "")
 

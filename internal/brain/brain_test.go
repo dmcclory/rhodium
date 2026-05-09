@@ -40,7 +40,7 @@ func TestBrainHunkMarks(t *testing.T) {
 	}
 
 	// Mark only the first hunk → partial.
-	marks := map[string]bool{hunks[0].Hash: true}
+	marks := map[string]int{hunks[0].Hash: 1}
 	if err := b.SetHunkMarks("acme/web", 42, fc.Path, marks); err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestBrainHunkMarks(t *testing.T) {
 	}
 
 	// Mark both → seen.
-	marks[hunks[1].Hash] = true
+	marks[hunks[1].Hash] = 1
 	if err := b.SetHunkMarks("acme/web", 42, fc.Path, marks); err != nil {
 		t.Fatal(err)
 	}
@@ -414,7 +414,7 @@ func TestBrainEventsMarks(t *testing.T) {
 	h0, h1 := hunks[0].Hash, hunks[1].Hash
 
 	// First write: both hunks turning on → two mark.set, zero mark.clear.
-	if err := b.SetHunkMarks("acme/web", 42, "src/main.go", map[string]bool{h0: true, h1: true}); err != nil {
+	if err := b.SetHunkMarks("acme/web", 42, "src/main.go", map[string]int{h0: 1, h1: 1}); err != nil {
 		t.Fatal(err)
 	}
 	evs := b.RecentEvents(EventFilter{PRKey: "acme/web#42", KindPrefix: "mark."})
@@ -437,7 +437,7 @@ func TestBrainEventsMarks(t *testing.T) {
 	}
 
 	// Second write: drop h0, keep h1 → one mark.clear for h0, zero sets.
-	if err := b.SetHunkMarks("acme/web", 42, "src/main.go", map[string]bool{h1: true}); err != nil {
+	if err := b.SetHunkMarks("acme/web", 42, "src/main.go", map[string]int{h1: 1}); err != nil {
 		t.Fatal(err)
 	}
 	evs = b.RecentEvents(EventFilter{PRKey: "acme/web#42", KindPrefix: "mark.", Limit: 1})
@@ -450,7 +450,7 @@ func TestBrainEventsMarks(t *testing.T) {
 
 	// Third write: same set → no new events (nothing toggled).
 	before := len(b.RecentEvents(EventFilter{KindPrefix: "mark.", Limit: 100}))
-	if err := b.SetHunkMarks("acme/web", 42, "src/main.go", map[string]bool{h1: true}); err != nil {
+	if err := b.SetHunkMarks("acme/web", 42, "src/main.go", map[string]int{h1: 1}); err != nil {
 		t.Fatal(err)
 	}
 	after := len(b.RecentEvents(EventFilter{KindPrefix: "mark.", Limit: 100}))
@@ -684,7 +684,7 @@ func TestBrainMarkFullyReviewed(t *testing.T) {
 	}
 
 	// Mark src/main.go as fully reviewed.
-	marks := map[string]bool{hunks[0].Hash: true, hunks[1].Hash: true}
+	marks := map[string]int{hunks[0].Hash: 1, hunks[1].Hash: 1}
 	if err := b.SetHunkMarks("acme/web", 42, "src/main.go", marks); err != nil {
 		t.Fatal(err)
 	}

@@ -262,7 +262,7 @@ func TestClearPR(t *testing.T) {
 	defer b.Close()
 
 	// Set up state: marks, file reviews, a session, and a note.
-	b.SetHunkMarks("acme/web", 42, "a.go", map[string]bool{"h1": true, "h2": true})
+	b.SetHunkMarks("acme/web", 42, "a.go", map[string]int{"h1": 1, "h2": 1})
 	b.SetFileReviewed("acme/web", 42, "a.go", "head1", "base1", MarkUser)
 	b.SetFileReviewed("acme/web", 42, "b.go", "head1", "base1", MarkUser)
 	b.SaveNote("acme/web", 42, "a.go", 10, "h1", "important note", "")
@@ -311,7 +311,7 @@ func TestClearPR(t *testing.T) {
 	}
 
 	// Different PR untouched.
-	b.SetHunkMarks("acme/web", 99, "x.go", map[string]bool{"h": true})
+	b.SetHunkMarks("acme/web", 99, "x.go", map[string]int{"h": 1})
 	if len(b.HunkMarks("acme/web", 99, "x.go")) != 1 {
 		t.Error("different PR marks should be untouched")
 	}
@@ -330,9 +330,9 @@ func TestForgetFile(t *testing.T) {
 	defer b.Close()
 
 	// Set up state: marks and file review on two files.
-	b.SetHunkMarks("acme/web", 42, "a.go", map[string]bool{"h1": true})
+	b.SetHunkMarks("acme/web", 42, "a.go", map[string]int{"h1": 1})
 	b.SetFileReviewed("acme/web", 42, "a.go", "head1", "base1", MarkUser)
-	b.SetHunkMarks("acme/web", 42, "b.go", map[string]bool{"h2": true})
+	b.SetHunkMarks("acme/web", 42, "b.go", map[string]int{"h2": 1})
 	b.SetFileReviewed("acme/web", 42, "b.go", "head1", "base1", MarkUser)
 	b.SaveNote("acme/web", 42, "a.go", 10, "h1", "note on a", "")
 

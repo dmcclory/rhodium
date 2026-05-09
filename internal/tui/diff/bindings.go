@@ -224,13 +224,13 @@ func (m *Model) toggleMarkAtCursor(b Brain) tea.Cmd {
 		return nil
 	}
 	if m.marks == nil {
-		m.marks = map[string]bool{}
+		m.marks = map[string]int{}
 	}
 	key := markKey(m.hunks, m.hunkIdx, h, m.segmented)
-	if m.marks[key] {
+	if m.marks[key] > 0 {
 		delete(m.marks, key)
 	} else {
-		m.marks[key] = true
+		m.marks[key] = hunkLineCount(h)
 	}
 	cmd := m.saveMarks(b)
 	m.stepHunk(1)
@@ -241,13 +241,13 @@ func (m *Model) toggleMarkAtCursor(b Brain) tea.Cmd {
 
 func (m *Model) markAll(b Brain) tea.Cmd {
 	if m.marks == nil {
-		m.marks = map[string]bool{}
+		m.marks = map[string]int{}
 	}
 	for i, h := range m.hunks {
 		if !h.IsMarkable() {
 			continue
 		}
-		m.marks[markKey(m.hunks, i, h, m.segmented)] = true
+		m.marks[markKey(m.hunks, i, h, m.segmented)] = hunkLineCount(h)
 	}
 	cmd := m.saveMarks(b)
 	m.redraw()
@@ -256,7 +256,7 @@ func (m *Model) markAll(b Brain) tea.Cmd {
 }
 
 func (m *Model) unmarkAll(b Brain) tea.Cmd {
-	m.marks = map[string]bool{}
+	m.marks = map[string]int{}
 	saveCmd := m.saveMarks(b)
 	m.redraw()
 	m.hunkIdx = 0

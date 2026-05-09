@@ -49,8 +49,10 @@ type Item struct {
 	PR           gh.PR
 	Tags         []string
 	ReviewStatus string // user-set custom status
-	Done         int    // catch-up progress — ignored when "catch-up" tag absent
-	Total        int    // catch-up total
+	Done         int    // catch-up progress — files done
+	Total        int    // catch-up total — files
+	LinesDone    int    // catch-up progress — lines done
+	LinesTotal   int    // catch-up total — lines
 	Remaining    int    // unseen hunk count — ignored when files not loaded
 	Notes        int    // notes attached to this PR
 	NotesNow     int    // "now" urgency notes
@@ -69,7 +71,11 @@ func (i Item) Title() string {
 				suffix = append(suffix, "in progress")
 			}
 		case "catch-up":
-			suffix = append(suffix, fmt.Sprintf("catch-up %d/%d", i.Done, i.Total))
+			if i.LinesTotal > 0 {
+				suffix = append(suffix, fmt.Sprintf("catch-up %d/%d files, %d/%d lines", i.Done, i.Total, i.LinesDone, i.LinesTotal))
+			} else {
+				suffix = append(suffix, fmt.Sprintf("catch-up %d/%d", i.Done, i.Total))
+			}
 		case "unseen":
 			suffix = append(suffix, "unseen")
 		case "notes":

@@ -158,7 +158,7 @@ func parseHunkRange(header string) hunkRange {
 // reverse-video header so you can see what `space` / `up` / `down` will
 // act on. Returns the rendered body and a parallel slice with each
 // hunk's header line offset for SetYOffset-based navigation.
-func renderHunks(hunks []corediff.Hunk, marks map[string]bool, focusedIdx int, notes []brain.Note, resolvedNotes []brain.Note, ghInline []gh.Comment, cursorLine int, showingResolved bool) (string, []int, []int) {
+func renderHunks(hunks []corediff.Hunk, marks map[string]int, focusedIdx int, notes []brain.Note, resolvedNotes []brain.Note, ghInline []gh.Comment, cursorLine int, showingResolved bool) (string, []int, []int) {
 	byLine := notesByLine(notes)
 	resolvedByLine := notesByLine(resolvedNotes)
 	ghByLine := ghInlineByLine(ghInline, notes)
@@ -168,7 +168,7 @@ func renderHunks(hunks []corediff.Hunk, marks map[string]bool, focusedIdx int, n
 	lineNum := 0
 	for i, h := range hunks {
 		mark := "[ ]"
-		if marks[h.Hash] {
+		if marks[h.Hash] > 0 {
 			mark = markedStyle.Render("[✓]")
 		}
 		headerLine := mark + " " + h.Header
@@ -267,7 +267,7 @@ func colorDiffLine(line string) string {
 // inline. Unchanged lines show with line numbers; additions are green,
 // deletions red. Hunk headers with mark indicators are shown at each
 // change boundary.
-func renderFullFile(fileContent string, hunks []corediff.Hunk, marks map[string]bool, focusedIdx int, notes []brain.Note, resolvedNotes []brain.Note, ghInline []gh.Comment, cursorLine int, showingResolved bool) (string, []int, []int) {
+func renderFullFile(fileContent string, hunks []corediff.Hunk, marks map[string]int, focusedIdx int, notes []brain.Note, resolvedNotes []brain.Note, ghInline []gh.Comment, cursorLine int, showingResolved bool) (string, []int, []int) {
 	fileLines := splitFileLines(fileContent)
 	parsed := parseHunksWithRanges(hunks)
 
@@ -330,9 +330,9 @@ func parseHunksWithRanges(hunks []corediff.Hunk) []parsedHunk {
 	return parsed
 }
 
-func formatHunkHeader(h corediff.Hunk, marks map[string]bool, focused bool) string {
+func formatHunkHeader(h corediff.Hunk, marks map[string]int, focused bool) string {
 	mark := "[ ]"
-	if marks[h.Hash] {
+	if marks[h.Hash] > 0 {
 		mark = markedStyle.Render("[✓]")
 	}
 	headerLine := mark + " " + h.Header
@@ -434,7 +434,7 @@ func (f *fullFileBuilder) emitHunkBody(bodyLines []string, newFileLine int) int 
 // focusedHunkInSeg is the 0-based index of the focused hunk *within this
 // segment's hunks only* (0 = first diff hunk, etc.). segIdx is the
 // segment's index in the segments slice, used to build prefixed mark keys.
-func renderSegment(seg corediff.Segment, view corediff.View, toLineOffset int, segIdx int, marks map[string]bool, focusedHunkInSeg int, notes []brain.Note, resolvedNotes []brain.Note, ghInline []gh.Comment, cursorLine int, showingResolved bool) (string, []int, []int) {
+func renderSegment(seg corediff.Segment, view corediff.View, toLineOffset int, segIdx int, marks map[string]int, focusedHunkInSeg int, notes []brain.Note, resolvedNotes []brain.Note, ghInline []gh.Comment, cursorLine int, showingResolved bool) (string, []int, []int) {
 	d := corediff.Diamond{B1: seg.B1, F1: seg.F1, B2: seg.B2, F2: seg.F2}
 	from := d.Get(view.From)
 	to := d.Get(view.To)
@@ -456,7 +456,7 @@ func renderSegment(seg corediff.Segment, view corediff.View, toLineOffset int, s
 	for hi, h := range segHunks {
 		mark := "[ ]"
 		key := fmt.Sprintf("%d:%s", segIdx, h.Hash)
-		if marks[key] {
+		if marks[key] > 0 {
 			mark = markedStyle.Render("[✓]")
 		}
 		isFocused := hi == focusedHunkInSeg
@@ -537,7 +537,7 @@ func splitLinesCount(s string) int {
 // flat renderHunks path when the diff is in segmented (catch-up) mode.
 // Returns the rendered body, per-hunk output-line offsets (including
 // segment headers), and the output→file-line map.
-func renderSegmented(segments []corediff.Segment, viewIdx int, storyMode bool, marks map[string]bool, focusedHunkIdx int, notes []brain.Note, resolvedNotes []brain.Note, ghInline []gh.Comment, cursorLine int, showingResolved bool) (string, []int, []int) {
+func renderSegmented(segments []corediff.Segment, viewIdx int, storyMode bool, marks map[string]int, focusedHunkIdx int, notes []brain.Note, resolvedNotes []brain.Note, ghInline []gh.Comment, cursorLine int, showingResolved bool) (string, []int, []int) {
 	var b strings.Builder
 	var lineMap []int
 	hunkLines := make([]int, 0, len(segments)*2)

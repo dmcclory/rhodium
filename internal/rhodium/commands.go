@@ -69,28 +69,32 @@ func autoAdvanceCmd(b *brain.Brain, pr gh.PR, files []gh.FileChange) tea.Cmd {
 	return func() tea.Msg {
 		states := b.AllFileReviewedStates(pr.Repo, pr.Number)
 		if len(states) == 0 {
+			// Fresh PR — no prior review history. Create a review session
+			// over all files so line-count progress tracking is available
+			// from the start, not only during catch-up.
+			ensureReviewSession(b, pr, files)
 			return autoAdvanceMsg{prKey: brain.PRKey(pr.Repo, pr.Number)}
 		}
 
 		drifted, forgotten := partitionReviewedFiles(states, files, pr)
 
-		// Probe the drifted bucket. `unresolvedPaths` are the ones that
+		// Probe the drifted bucket. `unresolvedFiles` are the ones that
 		// neither local-marks nor rev-update could advance — these still
 		// need the reviewer and become the session's file list.
 		results := probeAdvance(b, pr, drifted, states, 4)
 		var advanced []string
-		var unresolvedPaths []string
+		var unresolvedFiles []gh.FileChange
 		for _, fc := range drifted {
 			r, ok := results[fc.Path]
 			if !ok || r == advanceNone {
-				unresolvedPaths = append(unresolvedPaths, fc.Path)
+				unresolvedFiles = append(unresolvedFiles, fc)
 				continue
 			}
 			advanced = append(advanced, fc.Path)
 		}
 		advanced = append(advanced, forgotten...)
 
-		ensureCatchUpSession(b, pr, states, unresolvedPaths)
+		ensureCatchUpSession(b, pr, states, unresolvedFiles)
 		commitAdvances(b, pr, advanced)
 
 		return autoAdvanceMsg{prKey: brain.PRKey(pr.Repo, pr.Number), advancedFiles: advanced}
@@ -126,8 +130,8 @@ func partitionReviewedFiles(states map[string]brain.FileReviewState, files []gh.
 // unresolved files so their path list is stable even if the PR moves
 // mid-review. No-op if there's already an active session pointing at
 // the same goal SHAs, or if there's nothing left to review.
-func ensureCatchUpSession(b *brain.Brain, pr gh.PR, states map[string]brain.FileReviewState, unresolvedPaths []string) {
-	if len(unresolvedPaths) == 0 {
+func ensureCatchUpSession(b *brain.Brain, pr gh.PR, states map[string]brain.FileReviewState, unresolvedFiles []gh.FileChange) {
+	if len(unresolvedFiles) == 0 {
 		return
 	}
 	existing := b.ActiveSession(pr.Repo, pr.Number)
@@ -142,11 +146,31 @@ func ensureCatchUpSession(b *brain.Brain, pr gh.PR, states map[string]brain.File
 			break
 		}
 	}
-	sessionFiles := make([]brain.SessionFile, 0, len(unresolvedPaths))
-	for _, p := range unresolvedPaths {
-		sessionFiles = append(sessionFiles, brain.SessionFile{Path: p})
+	sessionFiles := make([]brain.SessionFile, 0, len(unresolvedFiles))
+	for _, fc := range unresolvedFiles {
+		lineCount := fc.Additions + fc.Deletions
+		sessionFiles = append(sessionFiles, brain.SessionFile{Path: fc.Path, LineCount: lineCount})
 	}
 	b.CreateSession(pr.Repo, pr.Number, oldHead, oldBase, pr.HeadSHA, pr.BaseSHA, sessionFiles)
+}
+
+// ensureReviewSession creates an initial review session for a PR that has
+// no prior review history. This gives line-count progress tracking from the
+// very first file the reviewer opens, not only during catch-up. No-op if
+// an active session already exists.
+func ensureReviewSession(b *brain.Brain, pr gh.PR, files []gh.FileChange) {
+	if len(files) == 0 {
+		return
+	}
+	if b.ActiveSession(pr.Repo, pr.Number) != nil {
+		return
+	}
+	sessionFiles := make([]brain.SessionFile, 0, len(files))
+	for _, fc := range files {
+		lineCount := fc.Additions + fc.Deletions
+		sessionFiles = append(sessionFiles, brain.SessionFile{Path: fc.Path, LineCount: lineCount})
+	}
+	b.CreateSession(pr.Repo, pr.Number, "", "", pr.HeadSHA, pr.BaseSHA, sessionFiles)
 }
 
 // commitAdvances writes the file_reviews row for each advanced path,

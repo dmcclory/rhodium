@@ -12,10 +12,10 @@ import (
 // in practice.
 
 // makeMarksFromPatch parses `patch` the way the brain does at mark time
-// and returns a "path → {hash → true}" map, optionally filtering to a
+// and returns a "path → {hash → line_count}" map, optionally filtering to a
 // subset of hunk indices. Lets tests express "reviewer marked the first
 // hunk but not the second" without copy-pasting hash strings.
-func makeMarksFromPatch(path, patch string, markedIdx ...int) map[string]map[string]bool {
+func makeMarksFromPatch(path, patch string, markedIdx ...int) map[string]map[string]int {
 	hunks := diff.ParseHunks(patch)
 	want := map[int]bool{}
 	if len(markedIdx) == 0 {
@@ -27,13 +27,13 @@ func makeMarksFromPatch(path, patch string, markedIdx ...int) map[string]map[str
 			want[i] = true
 		}
 	}
-	m := map[string]bool{}
+	m := map[string]int{}
 	for i, h := range hunks {
 		if want[i] {
-			m[h.Hash] = true
+			m[h.Hash] = 1
 		}
 	}
-	return map[string]map[string]bool{path: m}
+	return map[string]map[string]int{path: m}
 }
 
 func TestOverlayCommitStatusFullyReviewed(t *testing.T) {
@@ -80,7 +80,7 @@ func TestOverlayCommitStatusUnreviewed(t *testing.T) {
 +added
 `
 	files := []gh.FileChange{{Path: "a.go", Patch: patch}}
-	marks := map[string]map[string]bool{} // no marks at all
+	marks := map[string]map[string]int{} // no marks at all
 
 	got := overlayCommitStatus(gh.Commit{SHA: "abc"}, files, marks)
 	if got.Marked != 0 || got.Total != 1 {
@@ -154,7 +154,7 @@ func TestOverlayCommitStatusAggregatesAcrossFiles(t *testing.T) {
 	marks := makeMarksFromPatch("a.go", patchA)
 	for h, v := range makeMarksFromPatch("b.go", patchB, 1)["b.go"] {
 		if marks["b.go"] == nil {
-			marks["b.go"] = map[string]bool{}
+			marks["b.go"] = map[string]int{}
 		}
 		marks["b.go"][h] = v
 	}

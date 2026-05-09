@@ -63,24 +63,25 @@ func (b *Brain) HasAnyMarks(repo string, pr int) bool {
 	return exists
 }
 
-func (b *Brain) HunkMarks(repo string, pr int, path string) map[string]bool {
+func (b *Brain) HunkMarks(repo string, pr int, path string) map[string]int {
 	key := PRKey(repo, pr)
-	rows, err := b.db.Query(`SELECT hunk_hash FROM hunk_marks WHERE pr_key = ? AND path = ?`, key, path)
+	rows, err := b.db.Query(`SELECT hunk_hash, line_count FROM hunk_marks WHERE pr_key = ? AND path = ?`, key, path)
 	if err != nil {
-		return map[string]bool{}
+		return map[string]int{}
 	}
 	defer rows.Close()
-	out := map[string]bool{}
+	out := map[string]int{}
 	for rows.Next() {
 		var h string
-		if rows.Scan(&h) == nil {
-			out[h] = true
+		var lc int
+		if rows.Scan(&h, &lc) == nil {
+			out[h] = lc
 		}
 	}
 	return out
 }
 
-func (b *Brain) SetHunkMarks(repo string, pr int, path string, marks map[string]bool) error {
+func (b *Brain) SetHunkMarks(repo string, pr int, path string, marks map[string]int) error {
 	key := PRKey(repo, pr)
 	tx, err := b.db.Begin()
 	if err != nil {
@@ -91,18 +92,19 @@ func (b *Brain) SetHunkMarks(repo string, pr int, path string, marks map[string]
 	// Snapshot prior marks before the bulk replace so we can emit one event
 	// per actual toggle (rather than one coarse "marks.replace"). Per-hunk
 	// events make future per-hunk undo trivial.
-	prior := map[string]bool{}
-	rows, err := tx.Query(`SELECT hunk_hash FROM hunk_marks WHERE pr_key = ? AND path = ?`, key, path)
+	prior := map[string]int{}
+	rows, err := tx.Query(`SELECT hunk_hash, line_count FROM hunk_marks WHERE pr_key = ? AND path = ?`, key, path)
 	if err != nil {
 		return err
 	}
 	for rows.Next() {
 		var h string
-		if err := rows.Scan(&h); err != nil {
+		var lc int
+		if err := rows.Scan(&h, &lc); err != nil {
 			rows.Close()
 			return err
 		}
-		prior[h] = true
+		prior[h] = lc
 	}
 	if err := rows.Close(); err != nil {
 		return err
@@ -111,22 +113,20 @@ func (b *Brain) SetHunkMarks(repo string, pr int, path string, marks map[string]
 	if _, err := tx.Exec(`DELETE FROM hunk_marks WHERE pr_key = ? AND path = ?`, key, path); err != nil {
 		return err
 	}
-	for h, on := range marks {
-		if on {
-			if _, err := tx.Exec(`INSERT INTO hunk_marks (pr_key, path, hunk_hash) VALUES (?, ?, ?)`, key, path, h); err != nil {
-				return err
-			}
+	for h, lc := range marks {
+		if _, err := tx.Exec(`INSERT INTO hunk_marks (pr_key, path, hunk_hash, line_count) VALUES (?, ?, ?, ?)`, key, path, h, lc); err != nil {
+			return err
 		}
 	}
-	for h, on := range marks {
-		if on && !prior[h] {
-			if err := logEvent(tx, "mark.set", key, path, map[string]string{"hunk_hash": h}); err != nil {
+	for h := range marks {
+		if prior[h] == 0 {
+			if err := logEvent(tx, "mark.set", key, path, map[string]any{"hunk_hash": h, "line_count": marks[h]}); err != nil {
 				return err
 			}
 		}
 	}
 	for h := range prior {
-		if !marks[h] {
+		if marks[h] == 0 {
 			if err := logEvent(tx, "mark.clear", key, path, map[string]string{"hunk_hash": h}); err != nil {
 				return err
 			}
@@ -143,7 +143,7 @@ func (b *Brain) Status(repo string, pr int, fc gh.FileChange) FileStatus {
 	marks := b.HunkMarks(repo, pr, fc.Path)
 	matched := 0
 	for _, h := range hunks {
-		if marks[h.Hash] {
+		if marks[h.Hash] > 0 {
 			matched++
 		}
 	}

@@ -32,7 +32,7 @@ func TestDecideAdvance(t *testing.T) {
 	})
 
 	t.Run("all hunks marked wins over rev-update", func(t *testing.T) {
-		marks := map[string]bool{h1.Hash: true, h2.Hash: true}
+		marks := map[string]int{h1.Hash: 1, h2.Hash: 1}
 		// Even if content differs, all-marked is the strongest advance reason.
 		if got := decideAdvance(hunks, marks, "old", "new"); got != advanceAllMarked {
 			t.Errorf("got %v, want advanceAllMarked", got)
@@ -40,7 +40,7 @@ func TestDecideAdvance(t *testing.T) {
 	})
 
 	t.Run("rev-update when content identical", func(t *testing.T) {
-		marks := map[string]bool{h1.Hash: true} // only one of two marked
+		marks := map[string]int{h1.Hash: 1} // only one of two marked
 		content := "package main\n\nfunc main() {}\n"
 		if got := decideAdvance(hunks, marks, content, content); got != advanceRevUpdate {
 			t.Errorf("got %v, want advanceRevUpdate", got)
@@ -48,14 +48,14 @@ func TestDecideAdvance(t *testing.T) {
 	})
 
 	t.Run("no advance when content differs and not all marked", func(t *testing.T) {
-		marks := map[string]bool{h1.Hash: true}
+		marks := map[string]int{h1.Hash: 1}
 		if got := decideAdvance(hunks, marks, "old", "new"); got != advanceNone {
 			t.Errorf("got %v, want advanceNone", got)
 		}
 	})
 
 	t.Run("missing oldContent cannot trigger rev-update", func(t *testing.T) {
-		marks := map[string]bool{h1.Hash: true}
+		marks := map[string]int{h1.Hash: 1}
 		if got := decideAdvance(hunks, marks, "", "new"); got != advanceNone {
 			t.Errorf("got %v, want advanceNone (oldContent unavailable)", got)
 		}
@@ -64,7 +64,7 @@ func TestDecideAdvance(t *testing.T) {
 	t.Run("both empty never counts as rev-update", func(t *testing.T) {
 		// Guard: "" == "" must not trick us into auto-advancing a file we
 		// actually know nothing about. Delete/forget is the caller's job.
-		marks := map[string]bool{}
+		marks := map[string]int{}
 		if got := decideAdvance(hunks, marks, "", ""); got != advanceNone {
 			t.Errorf("got %v, want advanceNone", got)
 		}
@@ -72,7 +72,7 @@ func TestDecideAdvance(t *testing.T) {
 
 	t.Run("zero hunks short-circuits before mark check", func(t *testing.T) {
 		// No hunks but non-empty marks (stale state) — still noHunks.
-		marks := map[string]bool{"stale-hash": true}
+		marks := map[string]int{"stale-hash": 1}
 		if got := decideAdvance(nil, marks, "same", "same"); got != advanceNoHunks {
 			t.Errorf("got %v, want advanceNoHunks", got)
 		}
@@ -102,7 +102,7 @@ func TestProbeAdvanceLocalOnly(t *testing.T) {
 	// fcMarked: two hunks, both ticked off in the brain.
 	fcMarked := gh.FileChange{Path: "src/main.go", Patch: samplePatch}
 	hunks := diff.ParseHunks(samplePatch)
-	marks := map[string]bool{hunks[0].Hash: true, hunks[1].Hash: true}
+	marks := map[string]int{hunks[0].Hash: 1, hunks[1].Hash: 1}
 	if err := b.SetHunkMarks(pr.Repo, pr.Number, fcMarked.Path, marks); err != nil {
 		t.Fatal(err)
 	}

@@ -33,11 +33,11 @@ import (
 // Brain is the narrow consumer-side interface this view needs from the
 // brain package. *brain.Brain satisfies it implicitly.
 type Brain interface {
-	HunkMarks(repo string, num int, path string) map[string]bool
+	HunkMarks(repo string, num int, path string) map[string]int
 	NotesForFile(repo string, num int, path string) []brain.Note
 	FileReviewedState(repo string, num int, path string) brain.FileReviewState
 	IsScrutinized(repo string, num int) bool
-	SetHunkMarks(repo string, num int, path string, marks map[string]bool) error
+	SetHunkMarks(repo string, num int, path string, marks map[string]int) error
 	SetFileReviewed(repo string, num int, path, head, base string, kind brain.MarkKind) error
 	SaveNote(repo string, num int, path string, lineNo int, hash, body, baseSHA string) error
 	SaveNoteWithUrgency(repo string, num int, path string, lineNo int, hash, body string, urgency brain.Urgency, assignee, baseSHA string) error
@@ -134,7 +134,7 @@ type Model struct {
 	file string
 
 	hunks      []corediff.Hunk
-	marks      map[string]bool
+	marks      map[string]int
 	notes      []brain.Note
 	resolvedNotes []brain.Note // resolved (manually or stale) notes for the open file
 	ghInline   []gh.Comment
@@ -268,7 +268,7 @@ func (m *Model) Footer() string {
 			continue
 		}
 		total++
-		if m.marks[markKey(m.hunks, i, h, m.segmented)] {
+		if m.marks[markKey(m.hunks, i, h, m.segmented)] > 0 {
 			marked++
 		}
 		if i <= m.hunkIdx {
@@ -688,34 +688,51 @@ func markKey(hunks []corediff.Hunk, i int, h corediff.Hunk, segmented bool) stri
 
 // prefixMarks converts brain-stored plain-hash marks to TUI-local
 // prefixed keys for the current segmented hunks list.
-func prefixMarks(hunks []corediff.Hunk, plain map[string]bool) map[string]bool {
-	prefixed := map[string]bool{}
+func prefixMarks(hunks []corediff.Hunk, plain map[string]int) map[string]int {
+	prefixed := map[string]int{}
 	for i, h := range hunks {
 		if !h.IsMarkable() {
 			continue
 		}
-		if plain[h.Hash] {
-			prefixed[fmt.Sprintf("%d:%s", segIdxForHunk(hunks, i), h.Hash)] = true
+		if plain[h.Hash] > 0 {
+			prefixed[fmt.Sprintf("%d:%s", segIdxForHunk(hunks, i), h.Hash)] = plain[h.Hash]
 		}
 	}
 	return prefixed
 }
 
-// flattenMarks strips TUI-local prefixes for brain storage.
-func (m *Model) flattenMarks() map[string]bool {
-	plain := map[string]bool{}
-	for k, v := range m.marks {
-		if m.segmented {
-			if idx := strings.Index(k, ":"); idx >= 0 {
-				plain[k[idx+1:]] = v
-			} else {
-				plain[k] = v
-			}
+// flattenMarks strips TUI-local prefixes for brain storage and returns
+// a map of hunk hash → line count (0 means unmarked, >0 means marked).
+func (m *Model) flattenMarks() map[string]int {
+	plain := map[string]int{}
+	for i, h := range m.hunks {
+		if !h.IsMarkable() {
+			continue
+		}
+		key := markKey(m.hunks, i, h, m.segmented)
+		if m.marks[key] > 0 {
+			plain[h.Hash] = hunkLineCount(h)
 		} else {
-			plain[k] = v
+			plain[h.Hash] = 0
 		}
 	}
 	return plain
+}
+
+// hunkLineCount returns the number of changed lines in a hunk (lines
+// starting with '+' or '-' but not '---' or '+++').
+func hunkLineCount(h corediff.Hunk) int {
+	n := 0
+	for _, line := range h.BodyLines {
+		if len(line) > 0 && (line[0] == '+' || line[0] == '-') {
+			// Skip the --- / +++ file header lines that appear in the first hunk.
+			if strings.HasPrefix(line, "--- ") || strings.HasPrefix(line, "+++ ") {
+				continue
+			}
+			n++
+		}
+	}
+	return n
 }
 
 func (m *Model) allMarked() bool {
@@ -725,7 +742,7 @@ func (m *Model) allMarked() bool {
 			continue
 		}
 		any = true
-		if !m.marks[markKey(m.hunks, i, h, m.segmented)] {
+		if m.marks[markKey(m.hunks, i, h, m.segmented)] == 0 {
 			return false
 		}
 	}
@@ -954,7 +971,7 @@ func filterInlineForPath(all []gh.Comment, path string) []gh.Comment {
 	return out
 }
 
-func firstUnmarked(hunks []corediff.Hunk, marks map[string]bool, segmented bool) int {
+func firstUnmarked(hunks []corediff.Hunk, marks map[string]int, segmented bool) int {
 	for i, h := range hunks {
 		if !h.IsMarkable() {
 			continue
@@ -963,7 +980,7 @@ func firstUnmarked(hunks []corediff.Hunk, marks map[string]bool, segmented bool)
 		if segmented {
 			key = fmt.Sprintf("%d:%s", segIdxForHunk(hunks, i), h.Hash)
 		}
-		if !marks[key] {
+		if marks[key] == 0 {
 			return i
 		}
 	}

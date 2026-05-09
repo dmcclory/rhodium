@@ -28,13 +28,13 @@ func (r advanceReason) advances() bool {
 // shortcut alone. An empty newContent is treated the same way — we refuse to
 // call two empty strings a match, because "file missing at both refs" is a
 // delete/forget case the caller should handle explicitly, not us.
-func decideAdvance(hunks []diff.Hunk, marks map[string]bool, oldContent, newContent string) advanceReason {
+func decideAdvance(hunks []diff.Hunk, marks map[string]int, oldContent, newContent string) advanceReason {
 	if len(hunks) == 0 {
 		return advanceNoHunks
 	}
 	allMarked := true
 	for _, h := range hunks {
-		if !marks[h.Hash] {
+		if marks[h.Hash] == 0 {
 			allMarked = false
 			break
 		}

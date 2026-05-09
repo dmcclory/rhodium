@@ -104,7 +104,7 @@ func buildFileSummary(b *brain.Brain, repo string, num int, f gh.FileChange) fil
 	marks := b.HunkMarks(repo, num, f.Path)
 	marked := 0
 	for _, h := range hunks {
-		if marks[h.Hash] {
+		if marks[h.Hash] > 0 {
 			marked++
 		}
 	}
@@ -151,6 +151,8 @@ func renderShowJSON(d showData) string {
 		out["session"] = map[string]any{
 			"files_total": d.Session.FilesTotal,
 			"files_done":  d.Session.FilesDone,
+			"lines_total": d.Session.LinesTotal,
+			"lines_done":  d.Session.LinesDone,
 		}
 	}
 	raw, _ := json.MarshalIndent(out, "", "  ")
@@ -174,7 +176,7 @@ func renderShowHeader(d showData) string {
 	}
 	var sessionLine string
 	if d.Session != nil {
-		sessionLine = fmt.Sprintf("Session: %d/%d files done  |  Scrutiny: %s", d.Session.FilesDone, d.Session.FilesTotal, scrutinyStr)
+		sessionLine = fmt.Sprintf("Session: %d/%d files, %d/%d lines  |  Scrutiny: %s", d.Session.FilesDone, d.Session.FilesTotal, d.Session.LinesDone, d.Session.LinesTotal, scrutinyStr)
 	} else {
 		sessionLine = fmt.Sprintf("Scrutiny: %s", scrutinyStr)
 	}

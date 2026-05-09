@@ -13,7 +13,8 @@ import (
 // (file_reviews) still happens per-file on mark-save; see
 // `project_session_gate_semantics.md` for why gate-at-completion is deferred.
 //
-// FilesTotal / FilesDone are denormalized from review_session_files on read.
+// FilesTotal / FilesDone and LinesTotal / LinesDone are denormalized from
+// review_session_files on read.
 type ReviewSession struct {
 	ID          int64
 	PRKey       string
@@ -23,6 +24,8 @@ type ReviewSession struct {
 	GoalBase    string
 	FilesTotal  int
 	FilesDone   int
+	LinesTotal  int
+	LinesDone   int
 	StartedAt   string
 	CompletedAt string
 }
@@ -30,9 +33,10 @@ type ReviewSession struct {
 // SessionFile is one row from review_session_files — a single path's
 // snapshot within a session.
 type SessionFile struct {
-	Path  string
-	Class string
-	Done  bool
+	Path      string
+	Class     string
+	Done      bool
+	LineCount int
 }
 
 // ActiveSession returns the current session for a PR — the most recent one
@@ -55,8 +59,19 @@ func (b *Brain) ActiveSession(repo string, pr int) *ReviewSession {
 
 func (b *Brain) hydrateSessionCounts(s *ReviewSession) {
 	b.db.QueryRow(
-		`SELECT COUNT(*), COALESCE(SUM(done), 0) FROM review_session_files WHERE session_id = ?`, s.ID,
-	).Scan(&s.FilesTotal, &s.FilesDone)
+		`SELECT
+			COUNT(*),
+			COALESCE(SUM(sf.done), 0),
+			COALESCE(SUM(sf.line_count), 0),
+			COALESCE(SUM(
+				(SELECT COALESCE(SUM(hm.line_count), 0)
+				 FROM hunk_marks hm
+				 WHERE hm.pr_key = rs.pr_key AND hm.path = sf.path)
+			), 0)
+		FROM review_session_files sf
+		JOIN review_sessions rs ON sf.session_id = rs.id
+		WHERE sf.session_id = ?`, s.ID,
+	).Scan(&s.FilesTotal, &s.FilesDone, &s.LinesTotal, &s.LinesDone)
 }
 
 // CreateSession snapshots a new session for a PR with the given file list.
@@ -102,8 +117,8 @@ func (b *Brain) CreateSession(repo string, pr int, headSHA, baseSHA, goalHead, g
 			done = 1
 		}
 		if _, err := tx.Exec(
-			`INSERT INTO review_session_files (session_id, path, class, done) VALUES (?, ?, ?, ?)`,
-			id, f.Path, f.Class, done); err != nil {
+			`INSERT INTO review_session_files (session_id, path, class, done, line_count) VALUES (?, ?, ?, ?, ?)`,
+			id, f.Path, f.Class, done, f.LineCount); err != nil {
 			return nil, err
 		}
 	}
@@ -211,7 +226,7 @@ func (b *Brain) CompleteSession(sessionID int64) error {
 // SessionFiles returns the files belonging to a session, in insertion order.
 func (b *Brain) SessionFiles(sessionID int64) []SessionFile {
 	rows, err := b.db.Query(
-		`SELECT path, class, done FROM review_session_files WHERE session_id = ? ORDER BY rowid`, sessionID)
+		`SELECT path, class, done, COALESCE(line_count, 0) FROM review_session_files WHERE session_id = ? ORDER BY rowid`, sessionID)
 	if err != nil {
 		return nil
 	}
@@ -220,7 +235,7 @@ func (b *Brain) SessionFiles(sessionID int64) []SessionFile {
 	for rows.Next() {
 		var f SessionFile
 		var done int
-		if rows.Scan(&f.Path, &f.Class, &done) == nil {
+		if rows.Scan(&f.Path, &f.Class, &done, &f.LineCount) == nil {
 			f.Done = done == 1
 			out = append(out, f)
 		}

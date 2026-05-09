@@ -37,6 +37,9 @@ func (a *app) rebuildPRs() {
 			}
 			if session := a.brain.ActiveSession(pr.Repo, pr.Number); session != nil {
 				it.Summary += fmt.Sprintf(", ↻ %d/%d", session.FilesDone, session.FilesTotal)
+				if session.LinesTotal > 0 {
+					it.Summary += fmt.Sprintf(" (%d/%d lines)", session.LinesDone, session.LinesTotal)
+				}
 			} else {
 				reviewedStates := a.brain.AllFileReviewedStates(pr.Repo, pr.Number)
 				catchUpCount := 0

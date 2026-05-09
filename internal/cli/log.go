@@ -52,7 +52,7 @@ type commitStatus struct {
 // different hunk further down the history. That's the documented
 // approximation; it's the right tradeoff because any more precise
 // answer requires commit-SHA-keyed state that breaks under rebase.
-func overlayCommitStatus(c gh.Commit, files []gh.FileChange, marksByPath map[string]map[string]bool) commitStatus {
+func overlayCommitStatus(c gh.Commit, files []gh.FileChange, marksByPath map[string]map[string]int) commitStatus {
 	out := commitStatus{
 		SHA:     c.SHA,
 		Title:   c.Title,
@@ -68,7 +68,7 @@ func overlayCommitStatus(c gh.Commit, files []gh.FileChange, marksByPath map[str
 		fileMarks := marksByPath[f.Path]
 		marked := 0
 		for _, h := range hunks {
-			if fileMarks[h.Hash] {
+			if fileMarks[h.Hash] > 0 {
 				marked++
 			}
 		}
@@ -140,7 +140,7 @@ func cmdLog(args []string) error {
 	if err != nil {
 		return err
 	}
-	marksByPath := make(map[string]map[string]bool, len(prFiles))
+	marksByPath := make(map[string]map[string]int, len(prFiles))
 	for _, f := range prFiles {
 		marksByPath[f.Path] = b.HunkMarks(repo, num, f.Path)
 	}

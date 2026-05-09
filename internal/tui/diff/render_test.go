@@ -142,7 +142,7 @@ func TestRenderSegmentMarkedHunk(t *testing.T) {
 		t.Fatal("expected hunks")
 	}
 	// renderSegment expects prefixed keys (segIdx:hash)
-	marks := map[string]bool{fmt.Sprintf("0:%s", hunks[0].Hash): true}
+	marks := map[string]int{fmt.Sprintf("0:%s", hunks[0].Hash): 1}
 
 	body, _, _ := renderSegment(seg, views[0], 0, 0, marks, 0, nil, nil, nil, 0, false)
 

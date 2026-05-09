@@ -24,8 +24,10 @@ type prTodoItem struct {
 	Tags    []string `json:"tags"`
 	Notes   int      `json:"notes,omitempty"`
 	CatchUp *struct {
-		Done  int `json:"done"`
-		Total int `json:"total"`
+		Done       int `json:"done"`
+		Total      int `json:"total"`
+		LinesDone  int `json:"lines_done"`
+		LinesTotal int `json:"lines_total"`
 	} `json:"catch_up,omitempty"`
 }
 
@@ -173,9 +175,11 @@ func buildTodoItems(b *brain.Brain) []prTodoItem {
 		}
 		if cu != nil {
 			item.CatchUp = &struct {
-				Done  int `json:"done"`
-				Total int `json:"total"`
-			}{Done: cu.FilesDone, Total: cu.FilesTotal}
+				Done       int `json:"done"`
+				Total      int `json:"total"`
+				LinesDone  int `json:"lines_done"`
+				LinesTotal int `json:"lines_total"`
+			}{Done: cu.FilesDone, Total: cu.FilesTotal, LinesDone: cu.LinesDone, LinesTotal: cu.LinesTotal}
 		}
 		items = append(items, item)
 	}
@@ -202,7 +206,11 @@ func renderTodoText(items []prTodoItem, syncedThisRun bool) {
 			suffix = append(suffix, fmt.Sprintf("status:%s", it.Status))
 		}
 		if it.CatchUp != nil {
-			suffix = append(suffix, fmt.Sprintf("catch-up %d/%d", it.CatchUp.Done, it.CatchUp.Total))
+			if it.CatchUp.LinesTotal > 0 {
+				suffix = append(suffix, fmt.Sprintf("catch-up %d/%d files, %d/%d lines", it.CatchUp.Done, it.CatchUp.Total, it.CatchUp.LinesDone, it.CatchUp.LinesTotal))
+			} else {
+				suffix = append(suffix, fmt.Sprintf("catch-up %d/%d", it.CatchUp.Done, it.CatchUp.Total))
+			}
 		}
 		if contains(it.Tags, "unseen") {
 			suffix = append(suffix, "unseen")
