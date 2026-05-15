@@ -54,6 +54,8 @@ func Run(args []string) error {
 		return cmdReview(args[1:])
 	case "mark-fully-reviewed":
 		return cmdMarkFullyReviewed(args[1:])
+	case "worktree":
+		return cmdWorktree(args[1:])
 	case "help", "-h", "--help":
 		printUsage()
 		return nil
@@ -117,6 +119,9 @@ Usage:
   rhodium prs [owner/repo] [--sync]         list PRs for a repo (or all repos if omitted)
   rhodium review --first-pass <owner/repo#N>  run agent first-pass review
   rhodium mark-fully-reviewed <owner/repo#N>        mark PR reviewed, no catch-up
+  rhodium worktree status                           show worktree freshness for cached PRs
+  rhodium worktree refresh <ref> [--all]            refresh stale worktree(s) to current HEAD
+  rhodium worktree remove <ref>...                  delete worktree(s) from disk
 
 Flags:
   --json     emit JSON (notes, todo, state, brain log, brain show, log, prs, status)

@@ -39,6 +39,15 @@ func runAction(a *app, action Action) (tea.Cmd, error) {
 		if err != nil {
 			return nil, err
 		}
+		// Check staleness and refresh if needed — agents must see current code.
+		stale, behind := isStale(a.cfg, pr.Repo, pr.Number)
+		if stale {
+			a.status.msg = fmt.Sprintf("worktree %d commits behind — refreshing…", behind)
+			if err := RefreshWorktree(a.cfg, pr.Repo, pr.Number); err != nil {
+				return nil, fmt.Errorf("stale worktree refresh failed: %w", err)
+			}
+			a.status.msg = fmt.Sprintf("worktree refreshed (%d commits) — launching %s…", behind, agent.Name)
+		}
 		worktree = w
 	}
 

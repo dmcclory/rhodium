@@ -182,6 +182,10 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.status.msg = m.Text
 		return a, nil
 
+	case worktreeStaleMsg:
+		a.status.msg = fmt.Sprintf("⚠ worktree is %d commit(s) behind — press 'r' in the diff to refresh, or run `rhodium worktree refresh`", m.behind)
+		return a, nil
+
 	case router.NavigatedMsg:
 		a.layout.focus(m.To)
 		return a, nil
@@ -420,6 +424,16 @@ func (a *app) openPR(pr gh.PR) tea.Cmd {
 					suffix = "note"
 				}
 				program.Send(statusMsg{fmt.Sprintf("resolved %d stale %s", n, suffix)})
+			}
+		}()
+		return nil
+	})
+	// Check worktree staleness in the background — warn if the local
+	// worktree is behind the PR's current HEAD.
+	cmds = append(cmds, func() tea.Msg {
+		go func() {
+			if stale, behind := isStale(a.cfg, repo, num); stale {
+				program.Send(worktreeStaleMsg{behind: behind})
 			}
 		}()
 		return nil

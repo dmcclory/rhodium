@@ -19,8 +19,22 @@ func (a *app) openInEditor(m tuidiff.OpenEditorMsg) tea.Cmd {
 		a.status.msg = "open: " + err.Error()
 		return nil
 	}
+	// If worktree is stale, refresh before opening — the editor should
+	// see current code.
+	if stale, behind := isStale(a.cfg, m.PR.Repo, m.PR.Number); stale {
+		a.status.msg = fmt.Sprintf("worktree %d behind — refreshing…", behind)
+		if err := RefreshWorktree(a.cfg, m.PR.Repo, m.PR.Number); err != nil {
+			a.status.msg = "refresh failed: " + err.Error()
+			// Fall through — still open editor with stale code rather
+			// than blocking the user entirely.
+		} else {
+			a.status.msg = fmt.Sprintf("opening %s:%d in %s (refreshed)", m.File, m.Line, worktree)
+		}
+	}
 	prKeyStr := fmt.Sprintf("%s#%d", m.PR.Repo, m.PR.Number)
-	a.status.msg = fmt.Sprintf("opening %s:%d in %s", m.File, m.Line, worktree)
+	if a.status.msg == "" {
+		a.status.msg = fmt.Sprintf("opening %s:%d in %s", m.File, m.Line, worktree)
+	}
 	return launchEditor(a.cfg, worktree, m.File, prKeyStr, m.Line)
 }
 

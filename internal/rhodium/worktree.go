@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -67,6 +68,219 @@ func resolveWorktree(cfg *Config, repo string, number int) (string, error) {
 	}
 
 	return target, nil
+}
+
+// worktreeHEAD returns the current HEAD SHA of an existing worktree.
+func worktreeHEAD(path string) (string, error) {
+	out, err := exec.Command("git", "-C", path, "rev-parse", "HEAD").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse HEAD in %s: %w — %s", path, err, strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// currentPRHEAD asks GitHub for the PR's current head SHA via `gh pr view`.
+func currentPRHEAD(repo string, number int) (string, error) {
+	out, err := exec.Command("gh", "pr", "view", fmt.Sprintf("%d", number),
+		"--repo", repo,
+		"--json", "headRefOid",
+		"--jq", ".headRefOid",
+	).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("gh pr view %s#%d: %w — %s", repo, number, err, strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// WorktreeStatus describes the state of a PR's worktree.
+type WorktreeStatus struct {
+	Path          string
+	State         string // "missing", "current", "stale", "error"
+	WorktreeHEAD  string // empty when missing/error
+	PRHEAD        string // empty when missing/error/unknown
+	BehindCount   int    // 0 when current/missing
+	PRState       string // "open", "merged", "closed", "unknown"
+}
+
+// InspectWorktree checks the worktree for a PR and returns its status.
+// It compares the worktree's HEAD SHA to the PR's current HEAD from GitHub.
+func InspectWorktree(cfg *Config, repo string, number int) WorktreeStatus {
+	safeRepo := strings.ReplaceAll(repo, "/", "-")
+	target := filepath.Join(cfg.WorktreeRoot(), safeRepo, fmt.Sprintf("pr-%d", number))
+
+	result := WorktreeStatus{Path: target}
+
+	// Check if path exists
+	if _, err := os.Stat(target); os.IsNotExist(err) {
+		result.State = "missing"
+		return result
+	} else if err != nil {
+		result.State = "error"
+		return result
+	}
+
+	// Get worktree HEAD
+	wtHead, err := worktreeHEAD(target)
+	if err != nil {
+		result.State = "error"
+		return result
+	}
+	result.WorktreeHEAD = wtHead
+
+	// Get PR's current HEAD from GitHub
+	prHead, err := currentPRHEAD(repo, number)
+	if err != nil {
+		// GitHub API failed — can't determine freshness
+		result.State = "error"
+		return result
+	}
+	result.PRHEAD = prHead
+
+	// Compare
+	if wtHead == prHead {
+		result.State = "current"
+		return result
+	}
+
+	// Stale — count how many commits behind
+	count, _ := countCommitsBehind(target, prHead)
+	result.State = "stale"
+	result.BehindCount = count
+
+	// Also check PR state for GC context
+	result.PRState = fetchPRState(repo, number)
+
+	return result
+}
+
+// countCommitsBehind returns how many commits the worktree is behind the target ref.
+// Best-effort — returns 0 on failure (we still know it's stale from the SHA mismatch).
+func countCommitsBehind(worktreePath, targetSHA string) (int, error) {
+	out, err := exec.Command("git", "-C", worktreePath, "rev-list", "--count", fmt.Sprintf("HEAD..%s", targetSHA)).CombinedOutput()
+	if err != nil {
+		return 0, err
+	}
+	count := strings.TrimSpace(string(out))
+	n, err := strconv.Atoi(count)
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// fetchPRState returns the PR's state (open/merged/closed) from GitHub.
+func fetchPRState(repo string, number int) string {
+	out, err := exec.Command("gh", "pr", "view", fmt.Sprintf("%d", number),
+		"--repo", repo,
+		"--json", "state",
+		"--jq", ".state",
+	).CombinedOutput()
+	if err != nil {
+		return "unknown"
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// isStale is a lightweight check: does the worktree's HEAD differ from the
+// PR's current HEAD on GitHub? Returns (stale, behindCount). If the
+// worktree doesn't exist yet, it's not stale (it'll be created on resolve).
+func isStale(cfg *Config, repo string, number int) (bool, int) {
+	safeRepo := strings.ReplaceAll(repo, "/", "-")
+	target := filepath.Join(cfg.WorktreeRoot(), safeRepo, fmt.Sprintf("pr-%d", number))
+
+	if _, err := os.Stat(target); os.IsNotExist(err) {
+		return false, 0
+	}
+
+	wtHead, err := worktreeHEAD(target)
+	if err != nil {
+		return false, 0
+	}
+
+	prHead, err := currentPRHEAD(repo, number)
+	if err != nil {
+		return false, 0
+	}
+
+	if wtHead == prHead {
+		return false, 0
+	}
+
+	behind, _ := countCommitsBehind(target, prHead)
+	return true, behind
+}
+
+// RefreshWorktree updates an existing worktree to match the PR's current HEAD.
+// It does a hard reset to preserve a clean state. Returns an error if the
+// refresh fails, in which case the caller may want to try a full recreate.
+func RefreshWorktree(cfg *Config, repo string, number int) error {
+	sourcePath := cfg.RepoPath(repo)
+	if _, err := os.Stat(sourcePath); os.IsNotExist(err) {
+		return fmt.Errorf("source repo not found at %s", sourcePath)
+	} else if err != nil {
+		return err
+	}
+
+	safeRepo := strings.ReplaceAll(repo, "/", "-")
+	target := filepath.Join(cfg.WorktreeRoot(), safeRepo, fmt.Sprintf("pr-%d", number))
+
+	// Verify worktree exists
+	existing, err := listWorktrees(sourcePath)
+	if err != nil {
+		return fmt.Errorf("list worktrees: %w", err)
+	}
+	found := false
+	for _, w := range existing {
+		if w == target {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("worktree %s is not registered in %s", target, sourcePath)
+	}
+
+	// Get the PR's current HEAD
+	prHead, err := currentPRHEAD(repo, number)
+	if err != nil {
+		return err
+	}
+
+	// Fetch latest from origin in the source repo
+	if out, err := exec.Command("git", "-C", sourcePath, "fetch", "origin").CombinedOutput(); err != nil {
+		return fmt.Errorf("git fetch: %w — %s", err, strings.TrimSpace(string(out)))
+	}
+
+	// Checkout the PR's HEAD in the worktree
+	checkoutCmd := exec.Command("git", "-C", target, "fetch", "origin")
+	if out, err := checkoutCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("worktree git fetch: %w — %s", err, strings.TrimSpace(string(out)))
+	}
+
+	// Hard reset to the PR's current HEAD
+	resetCmd := exec.Command("git", "-C", target, "reset", "--hard", prHead)
+	if _, err := resetCmd.CombinedOutput(); err != nil {
+		// If reset failed (e.g. detached HEAD issues), try full recreate
+		return recreateWorktree(cfg, sourcePath, repo, number, target)
+	}
+
+	return nil
+}
+
+// recreateWorktree removes and recreates a worktree from scratch.
+// Use this as a fallback when refresh fails.
+func recreateWorktree(cfg *Config, sourcePath, repo string, number int, target string) error {
+	// Remove the old worktree
+	if out, err := exec.Command("git", "-C", sourcePath, "worktree", "remove", "--force", target).CombinedOutput(); err != nil {
+		return fmt.Errorf("git worktree remove: %w — %s", err, strings.TrimSpace(string(out)))
+	}
+
+	// Clean up the directory if it still exists
+	os.RemoveAll(target)
+
+	// Recreate using resolveWorktree
+	_, err := resolveWorktree(cfg, repo, number)
+	return err
 }
 
 // listWorktrees returns the absolute paths of all registered worktrees for

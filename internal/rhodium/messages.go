@@ -147,3 +147,9 @@ type statusSetMsg struct {
 
 // statusMsg sets the footer status line from a background goroutine.
 type statusMsg struct{ Text string }
+
+// worktreeStaleMsg fires from a background goroutine when a PR is opened
+// and its worktree is behind the PR's current HEAD.
+type worktreeStaleMsg struct {
+	behind int
+}
