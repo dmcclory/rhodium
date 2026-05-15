@@ -28,6 +28,32 @@ import (
 // messages back onto the update loop.
 var program *tea.Program
 
+// snapshotPRs returns a freshly-allocated copy of prs so the caller can
+// hand it to a background goroutine without sharing the backing array
+// with the tea Update loop (which may continue to mutate allPRs while
+// the goroutine writes to SQLite). Cheap — len(allPRs) is small.
+func snapshotPRs(prs []gh.PR) []gh.PR {
+	if len(prs) == 0 {
+		return nil
+	}
+	out := make([]gh.PR, len(prs))
+	copy(out, prs)
+	return out
+}
+
+// bgSetPRCache snapshots prs and writes the cache in a background
+// goroutine, surfacing any error onto the status line via program.Send.
+// Centralizing this prevents the four prior call sites from drifting
+// (silent error-drop, missing snapshot, etc.).
+func bgSetPRCache(b *brain.Brain, prs []gh.PR) {
+	snapshot := snapshotPRs(prs)
+	go func() {
+		if err := b.SetPRCache(snapshot); err != nil && program != nil {
+			program.Send(statusMsg{Text: "pr_cache: " + err.Error()})
+		}
+	}()
+}
+
 // pollInterval controls how often the TUI re-reads brain state to pick
 // up external mutations (e.g. an nvim instance in another tmux pane
 // marking a hunk). SQLite reads are cheap; 500ms feels snappy without
@@ -697,7 +723,7 @@ func (a *app) onPRsLoaded(msg prsLoadedMsg) tea.Cmd {
 	added := mergePRs(a, msg.prs)
 	a.rebuildPRs()
 	a.prs.SetTitle(fmt.Sprintf("PRs (%d, loading files…)", len(a.cache.allPRs)))
-	go a.brain.SetPRCache(a.cache.allPRs)
+	bgSetPRCache(a.brain, a.cache.allPRs)
 
 	// Prefetch comments for any PR that doesn't have them cached yet —
 	// this covers PRs restored from the brain cache at startup, which
@@ -750,7 +776,7 @@ func (a *app) onPrefetchDone() tea.Cmd {
 	if len(a.cache.freshKeys) > 0 {
 		a.cache.pruneStale()
 		a.rebuildPRs()
-		go a.brain.SetPRCache(a.cache.allPRs)
+		bgSetPRCache(a.brain, a.cache.allPRs)
 	}
 	a.prs.SetTitle(fmt.Sprintf("PRs (%d)", len(a.cache.allPRs)))
 	return nil
@@ -892,7 +918,7 @@ func (a *app) onMergeSubmitted(msg merge.SubmittedMsg) tea.Cmd {
 	a.cache.dropPR(key)
 	delete(a.session.pinnedAttention, key)
 	a.rebuildPRs()
-	go a.brain.SetPRCache(a.cache.allPRs)
+	bgSetPRCache(a.brain, a.cache.allPRs)
 	return nil
 }
 
@@ -1032,7 +1058,7 @@ func (a *app) onPRsRefreshed(msg prsRefreshedMsg) tea.Cmd {
 		}
 	}
 	a.rebuildPRs()
-	go a.brain.SetPRCache(a.cache.allPRs)
+	bgSetPRCache(a.brain, a.cache.allPRs)
 	return nil
 }
 
