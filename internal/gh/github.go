@@ -18,6 +18,7 @@ type PR struct {
 	HeadSHA string
 	BaseSHA string
 	Body    string
+	State   string // "OPEN", "MERGED", "CLOSED"
 
 	// Live status fields — fetched fresh from `gh pr list` each session and
 	// not persisted to pr_cache. They render blank for the first ~second
@@ -34,6 +35,7 @@ type prListItem struct {
 	HeadRefOid string `json:"headRefOid"`
 	BaseRefOid string `json:"baseRefOid"`
 	Body       string `json:"body"`
+	State      string `json:"state"`
 	Author     struct {
 		Login string `json:"login"`
 	} `json:"author"`
@@ -56,7 +58,7 @@ type ghStatusCheckRollup struct {
 func ListPRs(repo string) ([]PR, error) {
 	out, err := exec.Command("gh", "pr", "list",
 		"--repo", repo,
-		"--json", "number,title,author,headRefOid,baseRefOid,body,reviewDecision,isDraft,mergeable,statusCheckRollup",
+		"--json", "number,title,author,headRefOid,baseRefOid,body,state,reviewDecision,isDraft,mergeable,statusCheckRollup",
 		"--limit", "50",
 	).Output()
 	if err != nil {
@@ -78,6 +80,7 @@ func ListPRs(repo string) ([]PR, error) {
 			HeadSHA:        it.HeadRefOid,
 			BaseSHA:        it.BaseRefOid,
 			Body:           it.Body,
+			State:          it.State,
 			ReviewDecision: it.ReviewDecision,
 			IsDraft:        it.IsDraft,
 			Mergeable:      it.Mergeable,

@@ -183,7 +183,7 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case worktreeStaleMsg:
-		a.status.msg = fmt.Sprintf("⚠ worktree is %d commit(s) behind — press 'r' in the diff to refresh, or run `rhodium worktree refresh`", m.behind)
+		a.status.msg = fmt.Sprintf("⚠ worktree is %d commit(s) behind — run `rhodium worktree refresh %s#%d`", m.behind, a.session.selectedPR.Repo, a.session.selectedPR.Number)
 		return a, nil
 
 	case router.NavigatedMsg:

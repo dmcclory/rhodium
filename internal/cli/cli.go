@@ -56,6 +56,10 @@ func Run(args []string) error {
 		return cmdMarkFullyReviewed(args[1:])
 	case "worktree":
 		return cmdWorktree(args[1:])
+	case "archive":
+		return cmdArchive(args[1:])
+	case "gc":
+		return cmdGC(args[1:])
 	case "help", "-h", "--help":
 		printUsage()
 		return nil
@@ -122,6 +126,9 @@ Usage:
   rhodium worktree status                           show worktree freshness for cached PRs
   rhodium worktree refresh <ref> [--all]            refresh stale worktree(s) to current HEAD
   rhodium worktree remove <ref>...                  delete worktree(s) from disk
+  rhodium archive <owner/repo#N> [reason]           archive a PR (remove from cache, tombstone, clean worktree)
+  rhodium archive list                              list archived PRs
+  rhodium gc [--older-than 30d] [--yes] [--dry-run] garbage-collect merged/closed PRs
 
 Flags:
   --json     emit JSON (notes, todo, state, brain log, brain show, log, prs, status)

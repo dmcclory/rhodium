@@ -282,3 +282,9 @@ func execCombined(name string, args ...string) error {
 	}
 	return nil
 }
+
+func jsonPrint(v any) error {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
+}
