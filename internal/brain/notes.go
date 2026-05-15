@@ -2,6 +2,7 @@ package brain
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -469,8 +470,22 @@ func (b *Brain) ResolveStaleNotes(repo string, pr int, headSHA string) (int, err
 	var resolved int
 	for path, pathNotes := range byPath {
 		content, err := gh.FetchFileAtRef(repo, path, headSHA)
-		if err != nil || content == "" {
-			// Can't fetch the file — resolve all notes on it as stale.
+		switch {
+		case errors.Is(err, gh.ErrFileNotFound):
+			// File is genuinely gone at this ref — resolve notes as stale.
+			for _, n := range pathNotes {
+				if err := b.resolveNoteByID(n.ID); err != nil {
+					return resolved, err
+				}
+				resolved++
+			}
+			continue
+		case err != nil:
+			// Transient failure (network, auth, rate limit). Skip this file
+			// rather than mass-resolving its notes on a flaky fetch.
+			continue
+		case content == "":
+			// File exists but is empty — every line-anchored note is stale.
 			for _, n := range pathNotes {
 				if err := b.resolveNoteByID(n.ID); err != nil {
 					return resolved, err

@@ -4,11 +4,26 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"sort"
 	"strings"
 )
+
+// ErrFileNotFound is returned by FetchFileAtRef when the underlying gh API
+// call distinguishes a legitimate "file does not exist at this ref" response
+// (HTTP 404) from a transient transport / auth / parse failure. Callers that
+// want to treat missing files as "gone" (e.g., stale-note resolution) should
+// `errors.Is(err, ErrFileNotFound)`; any other non-nil error means the result
+// is unreliable and should NOT be interpreted as "file is gone".
+var ErrFileNotFound = errors.New("gh: file not found at ref")
+
+// FetchFileAtRefFn is the injectable seam for FetchFileAtRef so tests can
+// fake gh shell-outs without spawning subprocesses. Production code MUST
+// always call gh.FetchFileAtRef (which dispatches through this var); tests
+// can swap this for a deterministic stub and restore via t.Cleanup.
+var FetchFileAtRefFn = fetchFileAtRefReal
 
 type PR struct {
 	Repo    string
@@ -200,26 +215,48 @@ func FetchCompare(repo, base, head string) ([]FileChange, error) {
 	return files, nil
 }
 
-// fetchFileAtRef fetches file content at a specific git ref (commit SHA, branch).
-// Returns "" if the file doesn't exist at that ref (e.g., new file).
+// FetchFileAtRef fetches file content at a specific git ref (commit SHA,
+// branch). It distinguishes three outcomes:
+//
+//   - (content, nil): file present, decoded successfully.
+//   - ("", ErrFileNotFound): file does not exist at that ref (HTTP 404).
+//     Callers may treat this as "file is gone".
+//   - ("", err) for any other err: transient failure (network, auth,
+//     parse, decode). Callers MUST NOT interpret this as "file is gone";
+//     the result is unreliable and the operation should be retried or
+//     skipped.
+//
+// Dispatches through FetchFileAtRefFn so tests can inject fakes.
 func FetchFileAtRef(repo, path, ref string) (string, error) {
-	out, err := exec.Command("gh", "api",
+	return FetchFileAtRefFn(repo, path, ref)
+}
+
+func fetchFileAtRefReal(repo, path, ref string) (string, error) {
+	cmd := exec.Command("gh", "api",
 		fmt.Sprintf("repos/%s/contents/%s?ref=%s", repo, path, ref),
-	).Output()
-	if err != nil {
-		// File might not exist at this ref (new file). That's OK.
-		return "", nil
+	)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		// gh prints "HTTP 404" on stderr when the resource is genuinely
+		// missing. Anything else (network, auth, rate-limit, 5xx, exec
+		// failure) is transient — surface a real error.
+		if strings.Contains(stderr.String(), "HTTP 404") {
+			return "", ErrFileNotFound
+		}
+		return "", fmt.Errorf("gh api contents %s %s@%s: %w (%s)", repo, path, ref, err, strings.TrimSpace(stderr.String()))
 	}
 	var content struct {
 		Content  string `json:"content"`
 		Encoding string `json:"encoding"`
 	}
-	if err := json.Unmarshal(out, &content); err != nil {
-		return "", nil
+	if err := json.Unmarshal(stdout.Bytes(), &content); err != nil {
+		return "", fmt.Errorf("parse contents json %s %s@%s: %w", repo, path, ref, err)
 	}
 	decoded, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(content.Content, "\n", ""))
 	if err != nil {
-		return "", nil
+		return "", fmt.Errorf("decode contents %s %s@%s: %w", repo, path, ref, err)
 	}
 	return string(decoded), nil
 }
