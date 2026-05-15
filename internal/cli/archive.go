@@ -1,9 +1,9 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -67,7 +67,7 @@ func cmdArchiveOne(args []string) error {
 
 	if _, err := os.Stat(target); err == nil {
 		if _, err := os.Stat(cfg.RepoPath(repo)); err == nil {
-			execCombined("git", "-C", cfg.RepoPath(repo), "worktree", "remove", "--force", target)
+			runCombined("git", "-C", cfg.RepoPath(repo), "worktree", "remove", "--force", target)
 		}
 		os.RemoveAll(target)
 		fmt.Printf("archived %s (%s) — worktree removed\n", prKey, reason)
@@ -313,7 +313,7 @@ func cmdGC(args []string) error {
 		target := fmt.Sprintf("%s/%s/pr-%d", cfg.WorktreeRoot(), safeRepo, c.pr.Number)
 		if _, err := os.Stat(target); err == nil {
 			if _, err := os.Stat(cfg.RepoPath(c.pr.Repo)); err == nil {
-				execCombined("git", "-C", cfg.RepoPath(c.pr.Repo), "worktree", "remove", "--force", target)
+				runCombined("git", "-C", cfg.RepoPath(c.pr.Repo), "worktree", "remove", "--force", target)
 			}
 			os.RemoveAll(target)
 			freed++
@@ -327,47 +327,32 @@ func cmdGC(args []string) error {
 
 // fetchPRStateAndDate gets the PR state and merged/closed date from GitHub.
 func fetchPRStateAndDate(repo string, number int) (state string, mergedAt string) {
-	out, err := execCombinedOut("gh", "pr", "view", fmt.Sprintf("%d", number),
+	type prStateResult struct {
+		State    string `json:"state"`
+		MergedAt string `json:"mergedAt"`
+		ClosedAt string `json:"closedAt"`
+	}
+
+	out, err := runCombinedOut("gh", "pr", "view", fmt.Sprintf("%d", number),
 		"--repo", repo,
 		"--json", "state,mergedAt,closedAt")
 	if err != nil {
 		return "unknown", ""
 	}
 
-	// Parse the JSON manually to avoid adding a dependency
-	// Simple parsing: look for "state": "MERGED" etc.
-	if strings.Contains(out, `"state":"MERGED"`) || strings.Contains(out, `"state": "MERGED"`) {
-		state = "MERGED"
-		// Extract mergedAt
-		if idx := strings.Index(out, `"mergedAt":"`); idx >= 0 {
-			start := idx + len(`"mergedAt":"`)
-			end := strings.Index(out[start:], `"`)
-			if end >= 0 {
-				mergedAt = out[start : start+end]
-			}
-		}
-	} else if strings.Contains(out, `"state":"CLOSED"`) || strings.Contains(out, `"state": "CLOSED"`) {
-		state = "CLOSED"
-		if idx := strings.Index(out, `"closedAt":"`); idx >= 0 {
-			start := idx + len(`"closedAt":"`)
-			end := strings.Index(out[start:], `"`)
-			if end >= 0 {
-				mergedAt = out[start : start+end]
-			}
-		}
-	} else {
-		state = "OPEN"
+	var result prStateResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		return "unknown", ""
+	}
+
+	state = result.State
+	if state == "MERGED" {
+		mergedAt = result.MergedAt
+	} else if state == "CLOSED" {
+		mergedAt = result.ClosedAt
 	}
 
 	return state, mergedAt
-}
-
-func execCombinedOut(name string, args ...string) (string, error) {
-	out, err := exec.Command(name, args...).CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("%s: %w — %s", name, err, strings.TrimSpace(string(out)))
-	}
-	return string(out), nil
 }
 
 func formatTime(s string) string {

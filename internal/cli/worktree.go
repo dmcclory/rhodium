@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"sort"
 	"strings"
 
@@ -251,7 +250,7 @@ func cmdWorktreeRemove(args []string) error {
 		// Try git worktree remove first
 		sourcePath := cfg.RepoPath(repo)
 		if _, statErr := os.Stat(sourcePath); statErr == nil {
-			if gitErr := execCombined("git", "-C", sourcePath, "worktree", "remove", target); gitErr != nil {
+			if gitErr := runCombined("git", "-C", sourcePath, "worktree", "remove", target); gitErr != nil {
 				fmt.Printf("  git remove failed (%s), removing directory\n", gitErr)
 			}
 		}
@@ -273,18 +272,4 @@ func hasFlag(flags []string, name string) bool {
 		}
 	}
 	return false
-}
-
-func execCombined(name string, args ...string) error {
-	out, err := exec.Command(name, args...).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%s: %w — %s", name, err, strings.TrimSpace(string(out)))
-	}
-	return nil
-}
-
-func jsonPrint(v any) error {
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	return enc.Encode(v)
 }
