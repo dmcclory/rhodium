@@ -93,20 +93,29 @@ func cmdTodo(args []string) error {
 
 // syncPRCache refreshes the brain's PR cache by listing every configured
 // repo from GitHub. Per-repo errors warn and continue so a transient
-// failure on one repo doesn't blank the cache for the others.
+// failure on one repo doesn't blank the cache for the others. If EVERY
+// repo errors out (offline / gh auth gone / rate limited) we preserve the
+// existing cache rather than wiping it — losing every cached PR for a
+// transient network glitch is far worse than a slightly stale list.
 func syncPRCache(b *brain.Brain) error {
 	cfg, err := rhodium.LoadConfig()
 	if err != nil {
 		return err
 	}
 	var all []gh.PR
+	var errCount int
 	for _, repo := range cfg.Repos {
 		prs, err := gh.ListPRs(repo)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warn: %s: %v\n", repo, err)
+			errCount++
 			continue
 		}
 		all = append(all, prs...)
+	}
+	if len(all) == 0 && errCount > 0 {
+		fmt.Fprintln(os.Stderr, "warn: every repo failed; pr_cache left intact")
+		return nil
 	}
 	if err := b.SetPRCache(all); err != nil {
 		return fmt.Errorf("write cache: %w", err)

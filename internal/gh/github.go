@@ -25,6 +25,11 @@ var ErrFileNotFound = errors.New("gh: file not found at ref")
 // can swap this for a deterministic stub and restore via t.Cleanup.
 var FetchFileAtRefFn = fetchFileAtRefReal
 
+// ListPRsFn is the injectable seam for ListPRs (same pattern as
+// FetchFileAtRefFn). Tests swap this to deterministic stubs and restore
+// via t.Cleanup.
+var ListPRsFn = listPRsReal
+
 type PR struct {
 	Repo    string
 	Number  int
@@ -71,6 +76,10 @@ type ghStatusCheckRollup struct {
 }
 
 func ListPRs(repo string) ([]PR, error) {
+	return ListPRsFn(repo)
+}
+
+func listPRsReal(repo string) ([]PR, error) {
 	out, err := exec.Command("gh", "pr", "list",
 		"--repo", repo,
 		"--json", "number,title,author,headRefOid,baseRefOid,body,state,reviewDecision,isDraft,mergeable,statusCheckRollup",
