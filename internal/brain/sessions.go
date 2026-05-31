@@ -298,16 +298,19 @@ func (b *Brain) AllActiveSessions() []ReviewSession {
 	if err != nil {
 		return nil
 	}
-	defer rows.Close()
-	var out []ReviewSession
+	var sessions []ReviewSession
 	for rows.Next() {
 		var s ReviewSession
 		if rows.Scan(&s.ID, &s.PRKey, &s.HeadSHA, &s.BaseSHA, &s.GoalHead, &s.GoalBase, &s.StartedAt) == nil {
-			b.hydrateSessionCounts(&s)
-			out = append(out, s)
+			sessions = append(sessions, s)
 		}
 	}
-	return out
+	rows.Close() // release the connection before per-session hydrations
+
+	for i := range sessions {
+		b.hydrateSessionCounts(&sessions[i])
+	}
+	return sessions
 }
 
 // ClearPR drops all hunk marks, file reviews, and review session data for a

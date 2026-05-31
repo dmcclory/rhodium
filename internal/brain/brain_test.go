@@ -19,6 +19,21 @@ const samplePatch = `@@ -1,3 +1,4 @@
 +added
 `
 
+func TestOpenBrainDBSetsMaxOpenConns(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("RHODIUM_BRAIN", filepath.Join(dir, "brain.db"))
+
+	db, err := openBrainDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if got := db.Stats().MaxOpenConnections; got != 1 {
+		t.Errorf("MaxOpenConnections = %d, want 1", got)
+	}
+}
+
 func TestBrainHunkMarks(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("RHODIUM_BRAIN", filepath.Join(dir, "brain.db"))

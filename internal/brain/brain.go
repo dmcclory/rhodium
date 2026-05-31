@@ -46,7 +46,17 @@ func brainPath() (string, error) {
 	return filepath.Join(dir, "rhodium", "brain.db"), nil
 }
 
-func LoadBrain() (*Brain, error) {
+// openBrainDSN returns the query-string appended to the sqlite path for all
+// brain connections. WAL mode enables concurrent readers with a single
+// writer; busy_timeout=5000 tells SQLite to retry for up to 5s when the
+// write lock is held by another process (e.g. a parallel TUI); txlock=
+// immediate acquires the write lock at BEGIN time so callers fail fast
+// instead of mid-transaction.
+const openBrainDSN = "?_journal_mode=WAL&_busy_timeout=5000&_txlock=immediate"
+
+// openBrainDB opens the brain SQLite database with the shared connection
+// settings. Callers are responsible for running migrations if needed.
+func openBrainDB() (*sql.DB, error) {
 	path, err := brainPath()
 	if err != nil {
 		return nil, err
@@ -54,11 +64,20 @@ func LoadBrain() (*Brain, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", path+"?_journal_mode=WAL")
+	db, err := sql.Open("sqlite", path+openBrainDSN)
 	if err != nil {
 		return nil, fmt.Errorf("open brain db: %w", err)
 	}
-	if err := runMigrations(db, path); err != nil {
+	db.SetMaxOpenConns(1)
+	return db, nil
+}
+
+func LoadBrain() (*Brain, error) {
+	db, err := openBrainDB()
+	if err != nil {
+		return nil, err
+	}
+	if err := runMigrations(db); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -76,19 +95,9 @@ func LoadBrain() (*Brain, error) {
 // Everything else should use OpenForCLI — the schema is whatever the most
 // recent TUI launch produced.
 func OpenForCLI() (*Brain, error) {
-	path, err := brainPath()
+	db, err := openBrainDB()
 	if err != nil {
 		return nil, err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, err
-	}
-	// busy_timeout=5000 (ms) tells SQLite to wait up to 5s for a write lock
-	// instead of returning SQLITE_BUSY immediately when the TUI holds the
-	// write side; CLI commands are short-lived so the wait is bounded.
-	db, err := sql.Open("sqlite", path+"?_journal_mode=WAL&_busy_timeout=5000")
-	if err != nil {
-		return nil, fmt.Errorf("open brain db: %w", err)
 	}
 	return &Brain{db: db}, nil
 }
@@ -97,7 +106,11 @@ func (b *Brain) Close() error {
 	return b.db.Close()
 }
 
-func runMigrations(db *sql.DB, path string) error {
+func runMigrations(db *sql.DB) error {
+	path, err := brainPath()
+	if err != nil {
+		return err
+	}
 	if err := bootstrapPreGooseDB(db); err != nil {
 		return fmt.Errorf("bootstrap brain db: %w", err)
 	}
