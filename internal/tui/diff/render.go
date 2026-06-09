@@ -30,6 +30,12 @@ var (
 	ddiffKeptStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))// muted gray
 	ddiffAbsorbedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))// yellow
 	ddiffPropagatedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))// cyan
+
+	// Chunk mode styles.
+	chunkHeaderStyle    = lipgloss.NewStyle().Bold(true)
+	chunkFocusedStyle   = lipgloss.NewStyle().Reverse(true).Bold(true)
+	chunkComplexityStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true) // yellow warning
+	chunkSigStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("249"))           // muted signature
 )
 
 var cursorIndicator = cursorStyle.Render("▸ ")
@@ -631,4 +637,121 @@ func renderSegmented(segments []corediff.Segment, viewIdx int, storyMode bool, m
 func ParseHunkRange(header string) (newStart, newCount int) {
 	r := parseHunkRange(header)
 	return r.newStart, r.newCount
+}
+
+// renderChunks produces a collapsed or expanded chunk view. Each chunk
+// shows as a single line when collapsed, or as a header + its diff lines
+// when expanded. Returns the rendered body, per-chunk output-line offsets,
+// and the output→file-line map.
+func renderChunks(chunks []corediff.Chunk, hunks []corediff.Hunk, marks map[string]int, focusedChunkIdx int, expanded map[int]bool, notes []brain.Note, resolvedNotes []brain.Note, ghInline []gh.Comment, cursorLine int, showingResolved bool) (string, []int, []int) {
+	byLine := notesByLine(notes)
+	resolvedByLine := notesByLine(resolvedNotes)
+	ghByLine := ghInlineByLine(ghInline, notes)
+
+	var b strings.Builder
+	var lineMap []int
+	chunkLines := make([]int, 0, len(chunks))
+	lineNum := 0
+
+	for ci, c := range chunks {
+		isFocused := ci == focusedChunkIdx
+		isExpanded := expanded[ci]
+
+		// Check if all hunks in this chunk are marked.
+		allMarked := true
+		for _, hi := range c.HunkIdxs {
+			h := hunks[hi]
+			if !h.IsMarkable() {
+				continue
+			}
+			if marks[h.Hash] == 0 {
+				allMarked = false
+				break
+			}
+		}
+
+		mark := "[ ]"
+		if allMarked {
+			mark = markedStyle.Render("[✓]")
+		}
+
+		// Build the header line.
+		header := formatChunkHeader(mark, c, allMarked, isFocused)
+		chunkLines = append(chunkLines, lineNum)
+		b.WriteString(header + "\n")
+		lineMap = append(lineMap, 0)
+		lineNum++
+
+		// If expanded, render the hunks within this chunk.
+		if isExpanded {
+			for _, hi := range c.HunkIdxs {
+				h := hunks[hi]
+				// Render hunk header (without mark, since chunk has the mark).
+				hunkHeader := h.Header
+				b.WriteString(lineNumStyle.Render("  "+hunkHeader) + "\n")
+				lineMap = append(lineMap, 0)
+				lineNum++
+
+				r := parseHunkRange(h.Header)
+				fileLine := r.newStart
+				for _, line := range h.BodyLines {
+					cur := fileLine
+					isFile := true
+					if len(line) > 0 && line[0] == '-' {
+						isFile = false
+					}
+
+					prefix := ""
+					if lineNum == cursorLine {
+						prefix = cursorIndicator
+					}
+					b.WriteString(prefix + "  " + colorDiffLine(line) + "\n")
+					if isFile {
+						lineMap = append(lineMap, cur)
+					} else {
+						lineMap = append(lineMap, 0)
+					}
+					lineNum++
+
+					if isFile {
+						if ln, ok := byLine[cur]; ok {
+							renderNoteLines(&b, ln, &lineNum, &lineMap)
+						}
+						if gl, ok := ghByLine[cur]; ok {
+							renderGHInlineLines(&b, gl, &lineNum, &lineMap)
+						}
+						if rn, ok := resolvedByLine[cur]; ok && len(rn) > 0 {
+							if showingResolved {
+								renderResolvedLines(&b, rn, &lineNum, &lineMap)
+							} else {
+								b.WriteString(resolvedIndicator + "\n")
+								lineMap = append(lineMap, 0)
+								lineNum++
+							}
+						}
+						fileLine++
+					}
+				}
+			}
+		}
+	}
+
+	return b.String(), chunkLines, lineMap
+}
+
+// formatChunkHeader builds the display line for one chunk.
+func formatChunkHeader(mark string, c corediff.Chunk, allMarked bool, focused bool) string {
+	sig := chunkSigStyle.Render(c.Signature)
+	rangeStr := fmt.Sprintf("(%d-%d)", c.StartLine, c.EndLine)
+
+	var complexityStr string
+	if c.Complexity > 5 {
+		complexityStr = " " + chunkComplexityStyle.Render(fmt.Sprintf("⚠ %d", c.Complexity))
+	}
+
+	content := fmt.Sprintf("  %s %s %s%s", mark, sig, rangeStr, complexityStr)
+	if focused {
+		return chunkFocusedStyle.Render(content)
+	}
+	return chunkHeaderStyle.Render(content)
 }

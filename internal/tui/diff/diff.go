@@ -11,6 +11,7 @@ package diff
 
 import (
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"strings"
 
@@ -146,6 +147,13 @@ type Model struct {
 	blob       string
 	fullPatch  string // original PR-level patch from Open — used to restore full diff after toggling out of catch-up
 
+	// Chunk mode state.
+	chunks         []corediff.Chunk
+	chunkIdx       int
+	chunkMode      bool            // true when rendering chunks instead of hunks
+	expandedChunks map[int]bool    // which chunks are expanded
+	chunker        corediff.Chunker // detected chunker for this file
+
 	// Catch-up diff state.
 	catchUpMode    bool
 	catchUpOldHead string
@@ -206,6 +214,7 @@ func New() Model {
 		mention:      newMentionPicker(),
 		contributors: map[string][]gh.Contributor{},
 		BackRoute:    router.RouteFiles,
+		expandedChunks: map[int]bool{},
 	}
 }
 
@@ -311,6 +320,27 @@ func (m *Model) Footer() string {
 		}
 	}
 	footer := fmt.Sprintf("hunk %d/%d  marked %d/%d%s  ↑/↓: nav  j/k: cursor  space: toggle+next  m: mark all  c: note  P: publish note  R: reply to thread  o: open  u: unmark  h: back", cur, total, marked, total, modeHint)
+	if m.chunkMode && len(m.chunks) > 0 {
+		chunkMarked := 0
+		chunkTotal := len(m.chunks)
+		for _, c := range m.chunks {
+			cMarked := true
+			for _, hi := range c.HunkIdxs {
+				h := m.hunks[hi]
+				if !h.IsMarkable() {
+					continue
+				}
+				if m.marks[h.Hash] == 0 {
+					cMarked = false
+					break
+				}
+			}
+			if cMarked {
+				chunkMarked++
+			}
+		}
+		footer = fmt.Sprintf("chunk %d/%d  marked %d/%d%s  enter: expand  space: toggle+next  m: mark all  c: note  P: publish note  R: reply to thread  o: open  u: unmark  h: back", m.chunkIdx+1, chunkTotal, chunkMarked, chunkTotal, modeHint)
+	}
 	// Resolved notes hint when cursor is on a line with resolved notes.
 	if !m.noting && !m.forgetMode && !m.showingResolved {
 		curLine := m.cursorFileLine()
@@ -378,6 +408,10 @@ func (m *Model) Open(b Brain, pr *gh.PR, fc gh.FileChange, ghInline []gh.Comment
 	m.resolvedNotes = b.ResolvedNotesForFile(pr.Repo, pr.Number, fc.Path)
 	m.ghInline = ghInline
 	m.hunkIdx = firstUnmarked(m.hunks, m.marks, false)
+
+	// Detect language and try to create chunks.
+	m.detectChunks(fc.Path, fc.Patch)
+
 	m.redraw()
 	m.jumpToHunk()
 
@@ -508,6 +542,111 @@ func (m *Model) SetContributors(repo string, c []gh.Contributor) {
 	m.sizeMentionPicker()
 }
 
+// detectChunks tries to find a chunker for the file's language and
+// creates chunks from the file content and hunks. Falls back to hunk
+// mode if no chunker is found or chunking produces < 2 chunks.
+func (m *Model) detectChunks(filePath, patch string) {
+	m.chunks = nil
+	m.chunkMode = false
+	m.chunker = nil
+	m.chunkIdx = 0
+	m.expandedChunks = map[int]bool{}
+
+	ext := filepath.Ext(filePath)
+	lang := extToLang(ext)
+	if lang == "" {
+		return
+	}
+
+	chunker := corediff.GetChunker(lang)
+	if chunker == nil {
+		return
+	}
+
+	// Use blob content if available, otherwise reconstruct from patch.
+	content := m.blob
+	if content == "" {
+		content = reconstructFromPatch(patch)
+	}
+	if content == "" {
+		return
+	}
+
+	chunks := chunker.Chunk(content, m.hunks)
+	// Only use chunk mode if we got at least 2 chunks.
+	if len(chunks) < 2 {
+		return
+	}
+
+	m.chunks = chunks
+	m.chunkMode = true
+	m.chunker = chunker
+	m.chunkIdx = firstUnmarkedChunk(chunks, m.hunks, m.marks, m.segmented)
+	// Expand the first unmarked chunk by default.
+	if m.chunkIdx >= 0 && m.chunkIdx < len(chunks) {
+		m.expandedChunks[m.chunkIdx] = true
+	}
+}
+
+// extToLang maps a file extension to a language name for chunker lookup.
+func extToLang(ext string) string {
+	switch ext {
+	case ".go":
+		return "go"
+	case ".ts", ".tsx":
+		return "typescript"
+	case ".js", ".jsx":
+		return "typescript"
+	case ".py":
+		return "python"
+	default:
+		return ""
+	}
+}
+
+// reconstructFromPatch builds a rough file content from a unified diff
+// patch. This is used when the blob isn't available yet.
+func reconstructFromPatch(patch string) string {
+	if patch == "" {
+		return ""
+	}
+	var lines []string
+	for _, line := range strings.Split(patch, "\n") {
+		if len(line) == 0 {
+			continue
+		}
+		switch line[0] {
+		case '+':
+			lines = append(lines, line[1:])
+		case ' ':
+			lines = append(lines, line[1:])
+		// Skip -, @@, ---, +++, diff --git lines.
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// firstUnmarkedChunk returns the index of the first chunk that has at
+// least one unmarked hunk. Falls back to 0.
+func firstUnmarkedChunk(chunks []corediff.Chunk, hunks []corediff.Hunk, marks map[string]int, segmented bool) int {
+	for i, c := range chunks {
+		for _, hi := range c.HunkIdxs {
+			h := hunks[hi]
+			if !h.IsMarkable() {
+				continue
+			}
+			key := h.Hash
+			if segmented {
+				key = fmt.Sprintf("%d:%s", segIdxForHunk(hunks, hi), h.Hash)
+			}
+			if marks[key] == 0 {
+				return i
+			}
+		}
+	}
+	return 0
+}
+
 // PR exposes the currently-open PR, or nil. App uses this to know whether
 // the diff view has anything loaded (e.g. before issuing a refresh).
 func (m *Model) PR() *gh.PR { return m.pr }
@@ -547,6 +686,8 @@ func (m *Model) onCatchUpLoaded(b Brain, msg CatchUpLoadedMsg) tea.Cmd {
 	m.hunks = corediff.ParseHunks(deltaFC.Patch)
 	m.marks = b.HunkMarks(m.pr.Repo, m.pr.Number, m.file)
 	m.hunkIdx = firstUnmarked(m.hunks, m.marks, false)
+	// Re-detect chunks with the new patch.
+	m.detectChunks(m.file, deltaFC.Patch)
 	m.redraw()
 	m.jumpToHunk()
 	return statusCmd(fmt.Sprintf("catch-up [%s]: f1→f2 since %s  (d: full diff)", corediff.ClassB1B2, shortSHA(m.catchUpOldHead)))
@@ -596,6 +737,10 @@ func (m *Model) onDiamondClassified(b Brain, msg DiamondClassifiedMsg) tea.Cmd {
 		m.marks = prefixMarks(m.hunks, m.marks)
 	}
 	m.hunkIdx = firstUnmarked(m.hunks, m.marks, m.segmented)
+	// Re-detect chunks with the new patch.
+	if !m.segmented {
+		m.detectChunks(m.file, m.catchUpPatch)
+	}
 
 	var status string
 	if m.segmented {
@@ -618,6 +763,10 @@ func (m *Model) onBlobLoaded(msg BlobLoadedMsg) tea.Cmd {
 		return statusCmd("blob: " + msg.Err.Error())
 	}
 	m.blob = msg.Content
+	// Try chunk detection now that we have the full file content.
+	if m.file != "" && !m.chunkMode {
+		m.detectChunks(m.file, m.fullPatch)
+	}
 	if !m.catchUpMode {
 		m.redraw()
 		m.jumpToHunk()
@@ -641,7 +790,9 @@ func (m *Model) redraw() {
 	var body string
 	var lines []int
 	var lmap []int
-	if m.blob != "" && !m.segmented {
+	if m.chunkMode && len(m.chunks) > 0 {
+		body, lines, lmap = renderChunks(m.chunks, m.hunks, m.marks, m.chunkIdx, m.expandedChunks, m.notes, m.resolvedNotes, m.ghInline, m.cursorLine, m.showingResolved)
+	} else if m.blob != "" && !m.segmented {
 		body, lines, lmap = renderFullFile(m.blob, m.hunks, m.marks, m.hunkIdx, m.notes, m.resolvedNotes, m.ghInline, m.cursorLine, m.showingResolved)
 	} else if m.segmented {
 		body, lines, lmap = renderSegmented(m.segments, m.segmentViewIdx, m.storyMode, m.marks, m.hunkIdx, m.notes, m.resolvedNotes, m.ghInline, m.cursorLine, m.showingResolved)
@@ -736,6 +887,9 @@ func hunkLineCount(h corediff.Hunk) int {
 }
 
 func (m *Model) allMarked() bool {
+	if m.chunkMode && len(m.chunks) > 0 {
+		return m.allChunksMarked()
+	}
 	any := false
 	for i, h := range m.hunks {
 		if !h.IsMarkable() {

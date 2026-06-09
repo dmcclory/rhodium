@@ -75,7 +75,7 @@ func (m *Model) bindings(b Brain) []keys.Binding {
 
 // navBindings: cursor + hunk movement, back, advance.
 func (m *Model) navBindings() []keys.Binding {
-	return []keys.Binding{
+	bindings := []keys.Binding{
 		{
 			Name: "back", Keys: []string{"esc", "h", "left"},
 			Desc: "back to files", Group: "Navigate",
@@ -83,6 +83,78 @@ func (m *Model) navBindings() []keys.Binding {
 				return func() tea.Msg { return LeavingMsg{} }
 			},
 		},
+	}
+
+	if m.chunkMode && len(m.chunks) > 0 {
+		bindings = append(bindings, m.chunkNavBindings()...)
+	} else {
+		bindings = append(bindings, m.hunkNavBindings()...)
+	}
+
+	bindings = append(bindings,
+		keys.Binding{
+			Name: "cursor-down", Keys: []string{"j"},
+			Desc: "cursor down", Group: "Navigate",
+			Action: func() tea.Cmd { m.moveCursor(1); return nil },
+		},
+		keys.Binding{
+			Name: "cursor-up", Keys: []string{"k"},
+			Desc: "cursor up", Group: "Navigate",
+			Action: func() tea.Cmd { m.moveCursor(-1); return nil },
+		},
+		keys.Binding{
+			Name: "advance", Keys: []string{"enter", "right"},
+			Desc: "toggle chunk / reveal resolved / back to files", Group: "Navigate",
+			Action: func() tea.Cmd {
+				// In chunk mode, enter toggles expand/collapse.
+				if m.chunkMode && len(m.chunks) > 0 {
+					return m.toggleChunkExpand()
+				}
+				// If cursor is on a line with resolved notes, reveal them.
+				if cmd := m.showResolvedAtCursor(); cmd != nil {
+					return cmd
+				}
+				// Otherwise fall back to leaving.
+				if m.allMarked() {
+					return func() tea.Msg { return LeavingMsg{} }
+				}
+				return nil
+			},
+		},
+	)
+
+	return bindings
+}
+
+// chunkNavBindings returns navigation bindings for chunk mode.
+func (m *Model) chunkNavBindings() []keys.Binding {
+	return []keys.Binding{
+		{
+			Name: "next-chunk", Keys: []string{"n", "down", "tab"},
+			Desc: "next chunk", Group: "Navigate",
+			Action: func() tea.Cmd {
+				m.stepChunk(1)
+				m.redraw()
+				m.jumpToChunk()
+				return nil
+			},
+		},
+		{
+			Name: "prev-chunk", Keys: []string{"p", "up", "shift+tab"},
+			Desc: "prev chunk", Group: "Navigate",
+			Action: func() tea.Cmd {
+				m.stepChunk(-1)
+				m.redraw()
+				m.jumpToChunk()
+				return nil
+			},
+		},
+	}
+}
+
+// hunkNavBindings returns navigation bindings for hunk mode.
+func (m *Model) hunkNavBindings() []keys.Binding {
+	return []keys.Binding{
 		{
 			Name: "next-hunk", Keys: []string{"n", "down", "tab"},
 			Desc: "next hunk", Group: "Navigate",
@@ -113,36 +185,30 @@ func (m *Model) navBindings() []keys.Binding {
 			Desc: "prev segment", Group: "Navigate",
 			Action: func() tea.Cmd { return m.prevSegment() },
 		},
-		{
-			Name: "cursor-down", Keys: []string{"j"},
-			Desc: "cursor down", Group: "Navigate",
-			Action: func() tea.Cmd { m.moveCursor(1); return nil },
-		},
-		{
-			Name: "cursor-up", Keys: []string{"k"},
-			Desc: "cursor up", Group: "Navigate",
-			Action: func() tea.Cmd { m.moveCursor(-1); return nil },
-		},
-		{
-			Name: "advance", Keys: []string{"enter", "right"},
-			Desc: "reveal resolved / back to files", Group: "Navigate",
-			Action: func() tea.Cmd {
-				// If cursor is on a line with resolved notes, reveal them.
-				if cmd := m.showResolvedAtCursor(); cmd != nil {
-					return cmd
-				}
-				// Otherwise fall back to leaving.
-				if m.allMarked() {
-					return func() tea.Msg { return LeavingMsg{} }
-				}
-				return nil
-			},
-		},
 	}
 }
 
-// markBindings: toggle / mark-all / unmark-all on hunks.
+// markBindings: toggle / mark-all / unmark-all on hunks or chunks.
 func (m *Model) markBindings(b Brain) []keys.Binding {
+	if m.chunkMode && len(m.chunks) > 0 {
+		return []keys.Binding{
+			{
+				Name: "toggle-mark", Keys: []string{" ", "x"},
+				Desc: "toggle chunk + advance", Group: "Mark",
+				Action: func() tea.Cmd { return m.toggleChunkMark(b) },
+			},
+			{
+				Name: "mark-all", Keys: []string{"m"},
+				Desc: "mark every chunk", Group: "Mark",
+				Action: func() tea.Cmd { return m.markAll(b) },
+			},
+			{
+				Name: "unmark-all", Keys: []string{"u"},
+				Desc: "clear marks on file", Group: "Mark",
+				Action: func() tea.Cmd { return m.unmarkAll(b) },
+			},
+		}
+	}
 	return []keys.Binding{
 		{
 			Name: "toggle-mark", Keys: []string{" ", "x"},
@@ -358,6 +424,7 @@ func (m *Model) toggleCatchUp(b Brain) tea.Cmd {
 		m.hunks = corediff.ParseHunks(m.fullPatch)
 		m.marks = b.HunkMarks(m.pr.Repo, m.pr.Number, m.file)
 		m.hunkIdx = firstUnmarked(m.hunks, m.marks, false)
+		m.detectChunks(m.file, m.fullPatch)
 		m.redraw()
 		m.jumpToHunk()
 		return statusCmd("full diff  (d: catch-up diff)")
@@ -377,6 +444,7 @@ func (m *Model) toggleCatchUp(b Brain) tea.Cmd {
 		m.marks = prefixMarks(m.hunks, b.HunkMarks(m.pr.Repo, m.pr.Number, m.file))
 	} else {
 		m.marks = b.HunkMarks(m.pr.Repo, m.pr.Number, m.file)
+		m.detectChunks(m.file, m.catchUpPatch)
 	}
 	m.hunkIdx = firstUnmarked(m.hunks, m.marks, m.segmented)
 	m.redraw()
@@ -397,6 +465,110 @@ func (m *Model) emitOpenEditor() tea.Cmd {
 	pr := *m.pr
 	file := m.file
 	return func() tea.Msg { return OpenEditorMsg{PR: pr, File: file, Line: line} }
+}
+
+// --- chunk mode helpers ---
+
+// toggleChunkExpand toggles the expanded state of the focused chunk.
+func (m *Model) toggleChunkExpand() tea.Cmd {
+	if m.chunkIdx < 0 || m.chunkIdx >= len(m.chunks) {
+		return nil
+	}
+	if m.expandedChunks[m.chunkIdx] {
+		delete(m.expandedChunks, m.chunkIdx)
+	} else {
+		m.expandedChunks[m.chunkIdx] = true
+	}
+	m.redraw()
+	m.jumpToChunk()
+	return nil
+}
+
+// toggleChunkMark marks or unmarks all hunks in the focused chunk, then advances.
+func (m *Model) toggleChunkMark(b Brain) tea.Cmd {
+	if m.chunkIdx < 0 || m.chunkIdx >= len(m.chunks) {
+		return nil
+	}
+	c := m.chunks[m.chunkIdx]
+
+	// Check if all hunks are already marked.
+	allMarked := true
+	for _, hi := range c.HunkIdxs {
+		h := m.hunks[hi]
+		if !h.IsMarkable() {
+			continue
+		}
+		if m.marks[h.Hash] == 0 {
+			allMarked = false
+			break
+		}
+	}
+
+	if m.marks == nil {
+		m.marks = map[string]int{}
+	}
+
+	if allMarked {
+		// Unmark all hunks in this chunk.
+		for _, hi := range c.HunkIdxs {
+			h := m.hunks[hi]
+			if h.IsMarkable() {
+				delete(m.marks, h.Hash)
+			}
+		}
+	} else {
+		// Mark all hunks in this chunk.
+		for _, hi := range c.HunkIdxs {
+			h := m.hunks[hi]
+			if h.IsMarkable() {
+				m.marks[h.Hash] = hunkLineCount(h)
+			}
+		}
+	}
+
+	cmd := m.saveMarks(b)
+	m.stepChunk(1)
+	m.redraw()
+	m.jumpToChunk()
+	return cmd
+}
+
+// stepChunk moves m.chunkIdx by ±1.
+func (m *Model) stepChunk(delta int) {
+	if len(m.chunks) == 0 || delta == 0 {
+		return
+	}
+	next := m.chunkIdx + delta
+	if next < 0 || next >= len(m.chunks) {
+		return
+	}
+	m.chunkIdx = next
+}
+
+// jumpToChunk scrolls the viewport to the focused chunk.
+func (m *Model) jumpToChunk() {
+	if m.chunkIdx < 0 || m.chunkIdx >= len(m.hunkLines) {
+		return
+	}
+	target := m.hunkLines[m.chunkIdx]
+	m.cursorLine = target
+	m.vp.SetYOffset(target)
+}
+
+// allChunksMarked returns true when every chunk has all its hunks marked.
+func (m *Model) allChunksMarked() bool {
+	for _, c := range m.chunks {
+		for _, hi := range c.HunkIdxs {
+			h := m.hunks[hi]
+			if !h.IsMarkable() {
+				continue
+			}
+			if m.marks[h.Hash] == 0 {
+				return false
+			}
+		}
+	}
+	return len(m.chunks) > 0
 }
 
 // notingBindings are display-only entries shown in the help overlay while
