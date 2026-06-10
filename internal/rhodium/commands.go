@@ -272,27 +272,29 @@ func fetchComments(pr gh.PR) commentsLoadedMsg {
 func prefetchAllCmd(prs []gh.PR) tea.Cmd {
 	const workers = 4
 	return func() tea.Msg {
-		jobs := make(chan gh.PR)
-		done := make(chan struct{})
+		results := make([]batchFileResult, len(prs))
+		jobs := make(chan int)
 		var wg sync.WaitGroup
 		for i := 0; i < workers; i++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				for pr := range jobs {
-					program.Send(fetchOne(pr))
+				for idx := range jobs {
+					pr := prs[idx]
+					files, err := gh.ListPRFiles(pr.Repo, pr.Number)
+					results[idx] = batchFileResult{pr: pr, files: files, err: err}
 				}
 			}()
 		}
-		go func() {
-			for _, pr := range prs {
-				jobs <- pr
-			}
-			close(jobs)
-			wg.Wait()
-			close(done)
-		}()
-		<-done
+		for i := range prs {
+			jobs <- i
+		}
+		close(jobs)
+		wg.Wait()
+
+		// Send all results as a single batch message instead of flooding
+		// the event loop with individual program.Send() calls.
+		program.Send(batchFilesLoadedMsg{results: results})
 		return prefetchDoneMsg{}
 	}
 }
@@ -300,27 +302,29 @@ func prefetchAllCmd(prs []gh.PR) tea.Cmd {
 func prefetchCommentsCmd(prs []gh.PR) tea.Cmd {
 	const workers = 4
 	return func() tea.Msg {
-		jobs := make(chan gh.PR)
-		done := make(chan struct{})
+		results := make([]batchCommentResult, len(prs))
+		jobs := make(chan int)
 		var wg sync.WaitGroup
 		for i := 0; i < workers; i++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				for pr := range jobs {
-					program.Send(fetchComments(pr))
+				for idx := range jobs {
+					pr := prs[idx]
+					comments, err := gh.FetchPRComments(pr.Repo, pr.Number)
+					results[idx] = batchCommentResult{repo: pr.Repo, prNum: pr.Number, comments: comments, err: err}
 				}
 			}()
 		}
-		go func() {
-			for _, pr := range prs {
-				jobs <- pr
-			}
-			close(jobs)
-			wg.Wait()
-			close(done)
-		}()
-		<-done
+		for i := range prs {
+			jobs <- i
+		}
+		close(jobs)
+		wg.Wait()
+
+		// Send all results as a single batch message instead of flooding
+		// the event loop with individual program.Send() calls.
+		program.Send(batchCommentsLoadedMsg{results: results})
 		return prefetchDoneMsg{}
 	}
 }

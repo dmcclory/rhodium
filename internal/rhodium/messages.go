@@ -22,6 +22,35 @@ type filesLoadedMsg struct {
 
 type prefetchDoneMsg struct{}
 
+// batchFileResult is a single PR's file fetch result, used by both
+// prefetchAllCmd and batchFilesLoadedMsg.
+type batchFileResult struct {
+	pr    gh.PR
+	files []gh.FileChange
+	err   error
+}
+
+// batchFilesLoadedMsg carries the results of prefetchAllCmd — a single
+// message instead of flooding the event loop with individual filesLoadedMsg.
+type batchFilesLoadedMsg struct {
+	results []batchFileResult
+}
+
+// batchCommentResult is a single PR's comment fetch result.
+type batchCommentResult struct {
+	repo     string
+	prNum    int
+	comments []gh.Comment
+	err      error
+}
+
+// batchCommentsLoadedMsg carries the results of prefetchCommentsCmd — a
+// single message instead of flooding the event loop with individual
+// commentsLoadedMsg.
+type batchCommentsLoadedMsg struct {
+	results []batchCommentResult
+}
+
 type autoAdvanceMsg struct {
 	prKey         string
 	advancedFiles []string

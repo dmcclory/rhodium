@@ -165,6 +165,10 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.onPRsLoaded(m)
 	case filesLoadedMsg:
 		return a, a.onFilesLoaded(m)
+	case batchFilesLoadedMsg:
+		return a, a.onBatchFilesLoaded(m)
+	case batchCommentsLoadedMsg:
+		return a, a.onBatchCommentsLoaded(m)
 	case autoAdvanceMsg:
 		return a, a.onAutoAdvance(m)
 	case tuidiff.CatchUpLoadedMsg, tuidiff.DiamondClassifiedMsg, tuidiff.BlobLoadedMsg:
@@ -758,6 +762,43 @@ func (a *app) onFilesLoaded(msg filesLoadedMsg) tea.Cmd {
 		return nil
 	}
 	return autoAdvanceCmd(a.brain, msg.pr, msg.files)
+}
+
+// onBatchFilesLoaded processes the results of prefetchAllCmd — caches
+// file lists for each PR and kicks off auto-advance. Single rebuildPRs()
+// call at the end instead of one per PR.
+func (a *app) onBatchFilesLoaded(msg batchFilesLoadedMsg) tea.Cmd {
+	var cmds []tea.Cmd
+	for _, r := range msg.results {
+		if r.err != nil {
+			continue
+		}
+		key := brain.PRKey(r.pr.Repo, r.pr.Number)
+		a.cache.prFiles[key] = r.files
+		if a.session.selectedPR != nil && brain.PRKey(a.session.selectedPR.Repo, a.session.selectedPR.Number) == key {
+			a.rebuildFiles()
+			a.files.SetTitle(fmt.Sprintf("Files in %s#%d", r.pr.Repo, r.pr.Number))
+		}
+		if !a.brain.IsScrutinized(r.pr.Repo, r.pr.Number) {
+			cmds = append(cmds, autoAdvanceCmd(a.brain, r.pr, r.files))
+		}
+	}
+	a.rebuildPRs()
+	return tea.Batch(cmds...)
+}
+
+// onBatchCommentsLoaded processes the results of prefetchCommentsCmd —
+// caches comments for each PR. Single rebuildPRs() call at the end.
+func (a *app) onBatchCommentsLoaded(msg batchCommentsLoadedMsg) tea.Cmd {
+	for _, r := range msg.results {
+		if r.err != nil {
+			continue
+		}
+		key := brain.PRKey(r.repo, r.prNum)
+		a.cache.prComments[key] = r.comments
+	}
+	a.rebuildPRs()
+	return nil
 }
 
 func (a *app) onAutoAdvance(msg autoAdvanceMsg) tea.Cmd {
