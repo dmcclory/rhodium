@@ -434,7 +434,7 @@ func (f *fullFileBuilder) emitHunkBody(bodyLines []string, newFileLine int) int 
 						prefix = cursorIndicator
 					}
 					gutter := lineNumStyle.Render(fmt.Sprintf("%*d", f.gutterW, newFileLine))
-					f.b.WriteString(prefix + gutter + "  " + hl + "\n")
+					f.b.WriteString(prefix + gutter + "  " + addedStyle.Render("+ ") + hl + "\n")
 					f.lineMap = append(f.lineMap, newFileLine)
 					f.outputLine++
 					f.emitNotes(newFileLine)
@@ -735,7 +735,7 @@ func renderChunks(chunks []corediff.Chunk, hunks []corediff.Hunk, marks map[stri
 
 					if len(line) > 0 && line[0] == '+' && highlighter != nil {
 						if hl := highlighter.Line(fileLine - 1); hl != "" {
-							b.WriteString(prefix + "  " + hl + "\n")
+							b.WriteString(prefix + "  " + addedStyle.Render("+ ") + hl + "\n")
 							if isFile {
 								lineMap = append(lineMap, cur)
 							} else {

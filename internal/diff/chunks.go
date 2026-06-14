@@ -162,8 +162,38 @@ func (c *PythonChunker) Chunk(fileContent string, hunks []Hunk) []Chunk {
 // --- Shared chunk building ---
 
 func buildChunksFromBoundaries(boundaries []boundary, fileLines []string, hunks []Hunk) []Chunk {
-	var chunks []Chunk
+	// First pass: assign each hunk to exactly one chunk — the boundary whose
+	// range contains the hunk's first new-file line. Hunks before the first
+	// boundary go to the first chunk; hunks after the last boundary go to
+	// the last chunk.
+	hunkOwner := make(map[int]int) // hunkIdx -> boundaryIdx
+	for hi, h := range hunks {
+		r := parseHunkRange(h.Header)
+		if r.newStart == 0 {
+			continue
+		}
+		// Check each boundary range in order.
+		for bi, b := range boundaries {
+			startLine := b.lineNum
+			var endLine int
+			if bi+1 < len(boundaries) {
+				endLine = boundaries[bi+1].lineNum - 1
+			} else {
+				endLine = len(fileLines)
+			}
+			if r.newStart >= startLine && r.newStart <= endLine {
+				hunkOwner[hi] = bi
+				break
+			}
+		}
+		// Hunk starts before all boundaries → assign to first chunk.
+		if _, ok := hunkOwner[hi]; !ok && r.newStart < boundaries[0].lineNum {
+			hunkOwner[hi] = 0
+		}
+	}
 
+	// Second pass: build chunks from the ownership map.
+	var chunks []Chunk
 	for bi, b := range boundaries {
 		startLine := b.lineNum
 		var endLine int
@@ -173,24 +203,14 @@ func buildChunksFromBoundaries(boundaries []boundary, fileLines []string, hunks 
 			endLine = len(fileLines)
 		}
 
-		// Compute complexity from the chunk's source lines.
 		complexity := estimateComplexity(fileLines, startLine-1, endLine-1)
 
-		// Find which hunks overlap with this chunk's line range.
 		var hunkIdxs []int
-		for hi, h := range hunks {
-			r := parseHunkRange(h.Header)
-			if r.newStart == 0 {
-				continue
-			}
-			hunkEnd := r.newStart + r.newCount - 1
-			// Overlap check: hunk range intersects chunk range.
-			if hunkEnd >= startLine && r.newStart <= endLine {
+		for hi, owner := range hunkOwner {
+			if owner == bi {
 				hunkIdxs = append(hunkIdxs, hi)
 			}
 		}
-
-		// Skip chunks with no hunks — nothing to review.
 		if len(hunkIdxs) == 0 {
 			continue
 		}

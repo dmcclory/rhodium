@@ -49,10 +49,13 @@ var globalConfig = &Config{Port: defaultPort}
 
 	chunks := c.Chunk(fileContent, hunks)
 
-	// const and var are on lines 28 and 30. Hunk 3 covers 24-29, so var (line 30)
-	// has no hunk overlap and is skipped. Result: 5 chunks.
-	if len(chunks) != 5 {
-		t.Fatalf("got %d chunks, want 5", len(chunks))
+	// With one-chunk-per-hunk semantics, hunks are assigned to the chunk
+	// where their start line falls. Hunk 1 (line 1) → func main (before
+	// first boundary, assigned to first chunk). Hunk 2 (line 6) → func main.
+	// Hunk 3 (line 14) → type Config. Hunk 4 (line 24) → Validate.
+	// func add, const, and var get no hunks and are skipped. Result: 3 chunks.
+	if len(chunks) != 3 {
+		t.Fatalf("got %d chunks, want 3", len(chunks))
 	}
 
 	expected := []struct {
@@ -61,10 +64,8 @@ var globalConfig = &Config{Port: defaultPort}
 		end   int
 	}{
 		{"func main() {", 5, 8},
-		{"func add(a, b int) int {", 9, 12},
 		{"type Config struct {", 13, 17},
 		{"func (c *Config) Validate() error {", 18, 27},
-		{"const defaultPort = 8080", 28, 29},
 	}
 
 	for i, want := range expected {
@@ -157,10 +158,10 @@ export function formatUser(user: User): string {
 
 	chunks := c.Chunk(fileContent, hunks)
 
-	// The const regex requires a function-like pattern (const x = async? (...)),
-	// so "const DEFAULT_PAGE_SIZE = 20;" doesn't match. Result: 4 chunks.
-	if len(chunks) != 4 {
-		t.Fatalf("got %d chunks, want 4", len(chunks))
+	// One-chunk-per-hunk: ts1 (line 1) → class UserService, ts2 (line 16)
+	// → interface User, ts3 (line 24) → formatUser. Result: 3 chunks.
+	if len(chunks) != 3 {
+		t.Fatalf("got %d chunks, want 3", len(chunks))
 	}
 
 	expected := []struct {
@@ -169,7 +170,6 @@ export function formatUser(user: User): string {
 		{"export class UserService {"},
 		{"export interface User {"},
 		{"export type CreateUserInput = Omit<User, \"id\">;"},
-		{"export function formatUser(user: User): string {"},
 	}
 
 	for i, want := range expected {
@@ -208,18 +208,16 @@ def format_user(user):
 
 	chunks := c.Chunk(fileContent, hunks)
 
-	// 4 methods in class + 1 standalone function = 5 chunks.
-	if len(chunks) != 5 {
-		t.Fatalf("got %d chunks, want 5", len(chunks))
+	// One-chunk-per-hunk: py1 (line 1) → class UserService, py2 (line 13)
+	// → format_user. Result: 2 chunks.
+	if len(chunks) != 2 {
+		t.Fatalf("got %d chunks, want 2", len(chunks))
 	}
 
 	expected := []struct {
 		sig string
 	}{
 		{"class UserService:"},
-		{"def __init__(self, db):"},
-		{"def get_user(self, user_id):"},
-		{"def create_user(self, user_data):"},
 		{"def format_user(user):"},
 	}
 
