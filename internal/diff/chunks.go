@@ -1,8 +1,10 @@
 package diff
 
 import (
-	"regexp"
 	"strings"
+
+	"github.com/odvcencio/gotreesitter"
+	"github.com/odvcencio/gotreesitter/grammars"
 )
 
 // Chunker detects semantic boundaries in source code and groups hunks
@@ -56,144 +58,151 @@ type boundary struct {
 }
 
 func init() {
-	RegisterChunker(&GoChunker{})
-	RegisterChunker(&TypeScriptChunker{})
-	RegisterChunker(&PythonChunker{})
+	RegisterChunker(&TSChunker{}) // "treesitter"
+	// Register under legacy names for extToLang compatibility.
+	RegisterChunker(&tsNamedChunker{named: "go", types: tsBoundaryTypes["go"]})
+	RegisterChunker(&tsNamedChunker{named: "typescript", types: tsBoundaryTypes["typescript"]})
+	RegisterChunker(&tsNamedChunker{named: "javascript", types: tsBoundaryTypes["javascript"]})
+	RegisterChunker(&tsNamedChunker{named: "python", types: tsBoundaryTypes["python"]})
+	RegisterChunker(&tsNamedChunker{named: "rust", types: tsBoundaryTypes["rust"]})
+	RegisterChunker(&tsNamedChunker{named: "ruby", types: tsBoundaryTypes["ruby"]})
 }
 
-// --- Go chunker ---
+// tsNamedChunker delegates to tsChunkForLanguage directly — no trial-and-error.
+type tsNamedChunker struct {
+	named string
+	types []string
+}
 
-type GoChunker struct{}
+func (c *tsNamedChunker) Name() string { return c.named }
 
-func (c *GoChunker) Name() string { return "go" }
+func (c *tsNamedChunker) Chunk(fileContent string, hunks []Hunk) []Chunk {
+	entry := grammars.DetectLanguageByName(c.named)
+	if entry == nil {
+		return nil
+	}
+	return tsChunkForLanguage(fileContent, hunks, entry.Language(), c.types)
+}
 
-var goSignatureRE = regexp.MustCompile(`^(func|type|var|const)\s+`)
+// --- Tree-sitter chunker (replaces per-language regex chunkers) ---
 
-func (c *GoChunker) Chunk(fileContent string, hunks []Hunk) []Chunk {
+// TSChunker uses tree-sitter ASTs to find top-level declarations as
+// chunk boundaries. Works for any language in the gotreesitter grammar
+// registry (206 languages). The boundaryTypes map lists AST node types
+// that represent semantic boundaries per language.
+
+type TSChunker struct{}
+
+func (c *TSChunker) Name() string { return "treesitter" }
+
+var tsBoundaryTypes = map[string][]string{
+	"go":           {"function_declaration", "method_declaration", "type_declaration", "var_declaration", "const_declaration"},
+	"typescript":   {"function_declaration", "class_declaration", "interface_declaration", "type_alias_declaration", "lexical_declaration", "variable_declaration", "enum_declaration", "generator_function_declaration"},
+	"javascript":   {"function_declaration", "class_declaration", "lexical_declaration", "variable_declaration", "generator_function_declaration"},
+	"tsx":          {"function_declaration", "class_declaration", "interface_declaration", "type_alias_declaration", "lexical_declaration", "variable_declaration", "enum_declaration"},
+	"python":       {"function_definition", "class_definition"},
+	"rust":         {"function_item", "struct_item", "enum_item", "impl_item", "trait_item", "type_item", "const_item", "static_item"},
+	"ruby":         {"method", "class", "module", "singleton_class"},
+}
+
+// tsTopLevelRoots lists the AST root type names for different languages.
+var tsTopLevelRoots = map[string]bool{
+	"source_file": true, // Go, C, Rust, etc.
+	"module":      true, // Python
+	"program":     true, // TypeScript, JavaScript
+}
+
+func isTSTopLevel(node *gotreesitter.Node, lang *gotreesitter.Language) bool {
+	p := node.Parent()
+	if p == nil {
+		return true
+	}
+	return tsTopLevelRoots[p.Type(lang)]
+}
+
+func isTSWrappedExport(node *gotreesitter.Node, lang *gotreesitter.Language) bool {
+	p := node.Parent()
+	return p != nil && p.Type(lang) == "export_statement" && isTSTopLevel(p, lang)
+}
+
+func (c *TSChunker) Chunk(fileContent string, hunks []Hunk) []Chunk {
+	// Fallback: try all languages. Used when chunker is looked up by
+	// name "treesitter" directly (rare; normally extToLang maps to a
+	// specific language like "go").
+	var bestChunks []Chunk
+	for langName, types := range tsBoundaryTypes {
+		entry := grammars.DetectLanguageByName(langName)
+		if entry == nil {
+			continue
+		}
+		lang := entry.Language()
+		chunks := tsChunkForLanguage(fileContent, hunks, lang, types)
+		if len(chunks) > len(bestChunks) {
+			bestChunks = chunks
+		}
+	}
+	return bestChunks
+}
+
+func tsChunkForLanguage(fileContent string, hunks []Hunk, lang *gotreesitter.Language, boundaryTypes []string) []Chunk {
+	parser := gotreesitter.NewParser(lang)
+	tree, err := parser.Parse([]byte(fileContent))
+	if err != nil {
+		return nil
+	}
+
 	lines := strings.Split(fileContent, "\n")
 	if len(lines) > 0 && lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
 	}
 
-	var boundaries []boundary
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if goSignatureRE.MatchString(trimmed) {
-			boundaries = append(boundaries, boundary{
-				lineNum:   i + 1,
-				signature: trimmed,
-			})
+	type tsBoundary struct {
+		lineNum   int // 1-based
+		signature string
+	}
+	var boundaries []tsBoundary
+	seen := make(map[int]bool)
+
+	var walk func(n *gotreesitter.Node)
+	walk = func(n *gotreesitter.Node) {
+		t := n.Type(lang)
+		for _, bt := range boundaryTypes {
+			if t == bt {
+				row := int(n.StartPoint().Row) + 1 // 1-based
+				if !seen[row] && (isTSTopLevel(n, lang) || isTSWrappedExport(n, lang)) {
+					seen[row] = true
+					sig := ""
+					if row-1 < len(lines) {
+						sig = strings.TrimSpace(lines[row-1])
+					}
+					boundaries = append(boundaries, tsBoundary{lineNum: row, signature: sig})
+				}
+				break
+			}
+		}
+		for i := 0; i < n.ChildCount(); i++ {
+			walk(n.Child(i))
 		}
 	}
+	walk(tree.RootNode())
 
 	if len(boundaries) == 0 {
 		return nil
 	}
 
-	return buildChunksFromBoundaries(boundaries, lines, hunks)
-}
-
-// --- TypeScript/JavaScript chunker ---
-
-type TypeScriptChunker struct{}
-
-func (c *TypeScriptChunker) Name() string { return "typescript" }
-
-var tsSignatureRE = regexp.MustCompile(
-	`^(export\s+)?(default\s+)?(async\s+)?(function|class|const\s+\w+\s*[=:]\s*(async\s+)?\(|interface|type\s+\w+\s*=)`,
-)
-
-func (c *TypeScriptChunker) Chunk(fileContent string, hunks []Hunk) []Chunk {
-	lines := strings.Split(fileContent, "\n")
-	if len(lines) > 0 && lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
+	// Convert tsBoundary to boundary for shared builder.
+	boundaries2 := make([]boundary, len(boundaries))
+	for i, b := range boundaries {
+		boundaries2[i] = boundary{lineNum: b.lineNum, signature: b.signature}
 	}
-
-	var boundaries []boundary
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if tsSignatureRE.MatchString(trimmed) {
-			boundaries = append(boundaries, boundary{
-				lineNum:   i + 1,
-				signature: trimmed,
-			})
-		}
-	}
-
-	if len(boundaries) == 0 {
-		return nil
-	}
-
-	return buildChunksFromBoundaries(boundaries, lines, hunks)
-}
-
-// --- Python chunker ---
-
-type PythonChunker struct{}
-
-func (c *PythonChunker) Name() string { return "python" }
-
-var pySignatureRE = regexp.MustCompile(`^(async\s+)?(def|class)\s+`)
-
-func (c *PythonChunker) Chunk(fileContent string, hunks []Hunk) []Chunk {
-	lines := strings.Split(fileContent, "\n")
-	if len(lines) > 0 && lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
-	}
-
-	var boundaries []boundary
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if pySignatureRE.MatchString(trimmed) {
-			boundaries = append(boundaries, boundary{
-				lineNum:   i + 1,
-				signature: trimmed,
-			})
-		}
-	}
-
-	if len(boundaries) == 0 {
-		return nil
-	}
-
-	return buildChunksFromBoundaries(boundaries, lines, hunks)
+	return buildChunksFromBoundaries(boundaries2, lines, hunks)
 }
 
 // --- Shared chunk building ---
 
 func buildChunksFromBoundaries(boundaries []boundary, fileLines []string, hunks []Hunk) []Chunk {
-	// First pass: assign each hunk to exactly one chunk — the boundary whose
-	// range contains the hunk's first new-file line. Hunks before the first
-	// boundary go to the first chunk; hunks after the last boundary go to
-	// the last chunk.
-	hunkOwner := make(map[int]int) // hunkIdx -> boundaryIdx
-	for hi, h := range hunks {
-		r := parseHunkRange(h.Header)
-		if r.newStart == 0 {
-			continue
-		}
-		// Check each boundary range in order.
-		for bi, b := range boundaries {
-			startLine := b.lineNum
-			var endLine int
-			if bi+1 < len(boundaries) {
-				endLine = boundaries[bi+1].lineNum - 1
-			} else {
-				endLine = len(fileLines)
-			}
-			if r.newStart >= startLine && r.newStart <= endLine {
-				hunkOwner[hi] = bi
-				break
-			}
-		}
-		// Hunk starts before all boundaries → assign to first chunk.
-		if _, ok := hunkOwner[hi]; !ok && r.newStart < boundaries[0].lineNum {
-			hunkOwner[hi] = 0
-		}
-	}
-
-	// Second pass: build chunks from the ownership map.
 	var chunks []Chunk
+
 	for bi, b := range boundaries {
 		startLine := b.lineNum
 		var endLine int
@@ -205,12 +214,21 @@ func buildChunksFromBoundaries(boundaries []boundary, fileLines []string, hunks 
 
 		complexity := estimateComplexity(fileLines, startLine-1, endLine-1)
 
+		// Find hunks that overlap this chunk's line range. A hunk may
+		// appear in multiple chunks; renderChunks filters body lines to
+		// each chunk's range so there's no visual duplication.
 		var hunkIdxs []int
-		for hi, owner := range hunkOwner {
-			if owner == bi {
+		for hi, h := range hunks {
+			r := parseHunkRange(h.Header)
+			if r.newStart == 0 {
+				continue
+			}
+			hunkEnd := r.newStart + r.newCount - 1
+			if hunkEnd >= startLine && r.newStart <= endLine {
 				hunkIdxs = append(hunkIdxs, hi)
 			}
 		}
+
 		if len(hunkIdxs) == 0 {
 			continue
 		}

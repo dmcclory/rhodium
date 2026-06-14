@@ -788,3 +788,66 @@ func TestRenderDDiffLineStyles(t *testing.T) {
 		}
 	}
 }
+
+// TestRenderChunksFiltersHunkLinesByRange verifies that when a single large
+// hunk spans multiple chunks, each expanded chunk renders only the lines
+// within its semantic range — no duplication across chunks.
+func TestRenderChunksFiltersHunkLinesByRange(t *testing.T) {
+	hunks := []corediff.Hunk{
+		{Header: "@@ -0,0 +1,13 @@", BodyLines: []string{
+			"+func foo() {",
+			"+\tfmt.Println(\"foo\")",
+			"+}",
+			"+",
+			"+func bar() {",
+			"+\tfmt.Println(\"bar\")",
+			"+}",
+			"+",
+			"+func baz() {",
+			"+\tfmt.Println(\"baz\")",
+			"+}",
+		}, Hash: "h1"},
+	}
+
+	chunks := []corediff.Chunk{
+		{Signature: "func foo() {", StartLine: 1, EndLine: 4, HunkIdxs: []int{0}},
+		{Signature: "func bar() {", StartLine: 5, EndLine: 8, HunkIdxs: []int{0}},
+		{Signature: "func baz() {", StartLine: 9, EndLine: 11, HunkIdxs: []int{0}},
+	}
+
+	// Expand all chunks so we can inspect what each one renders.
+	expanded := map[int]bool{0: true, 1: true, 2: true}
+
+	body, _, _ := renderChunks(chunks, hunks, nil, 0, expanded, nil, nil, nil, 0, false, nil)
+	lines := strings.Split(body, "\n")
+
+	// Count how many times each function signature appears as a diff line
+	// (prefixed with '+ '). The green '+ ' prefix was added so additions
+	// are still visible alongside syntax highlighting.
+	fooCount := 0
+	barCount := 0
+	bazCount := 0
+	for _, l := range lines {
+		if strings.Contains(l, "func foo()") && strings.Contains(l, "+") {
+			fooCount++
+		}
+		if strings.Contains(l, "func bar()") && strings.Contains(l, "+") {
+			barCount++
+		}
+		if strings.Contains(l, "func baz()") && strings.Contains(l, "+") {
+			bazCount++
+		}
+	}
+
+	// Each function should appear exactly once — in its own chunk — not
+	// duplicated across all three chunks.
+	if fooCount != 1 {
+		t.Errorf("func foo appears %d times in output, want 1", fooCount)
+	}
+	if barCount != 1 {
+		t.Errorf("func bar appears %d times in output, want 1", barCount)
+	}
+	if bazCount != 1 {
+		t.Errorf("func baz appears %d times in output, want 1", bazCount)
+	}
+}

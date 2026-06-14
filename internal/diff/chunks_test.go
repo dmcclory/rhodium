@@ -3,7 +3,7 @@ package diff
 import "testing"
 
 func TestGoChunker(t *testing.T) {
-	c := &GoChunker{}
+	c := GetChunker("go")
 	if c.Name() != "go" {
 		t.Errorf("Name() = %q, want %q", c.Name(), "go")
 	}
@@ -49,13 +49,10 @@ var globalConfig = &Config{Port: defaultPort}
 
 	chunks := c.Chunk(fileContent, hunks)
 
-	// With one-chunk-per-hunk semantics, hunks are assigned to the chunk
-	// where their start line falls. Hunk 1 (line 1) → func main (before
-	// first boundary, assigned to first chunk). Hunk 2 (line 6) → func main.
-	// Hunk 3 (line 14) → type Config. Hunk 4 (line 24) → Validate.
-	// func add, const, and var get no hunks and are skipped. Result: 3 chunks.
-	if len(chunks) != 3 {
-		t.Fatalf("got %d chunks, want 3", len(chunks))
+	// const and var are on lines 28 and 30. Hunk 3 covers 24-29, so var (line 30)
+	// has no hunk overlap and is skipped. Result: 5 chunks.
+	if len(chunks) != 5 {
+		t.Fatalf("got %d chunks, want 5", len(chunks))
 	}
 
 	expected := []struct {
@@ -64,8 +61,10 @@ var globalConfig = &Config{Port: defaultPort}
 		end   int
 	}{
 		{"func main() {", 5, 8},
+		{"func add(a, b int) int {", 9, 12},
 		{"type Config struct {", 13, 17},
 		{"func (c *Config) Validate() error {", 18, 27},
+		{"const defaultPort = 8080", 28, 29},
 	}
 
 	for i, want := range expected {
@@ -83,7 +82,7 @@ var globalConfig = &Config{Port: defaultPort}
 }
 
 func TestGoChunkerNoBoundaries(t *testing.T) {
-	c := &GoChunker{}
+	c := GetChunker("go")
 	fileContent := `package main
 
 import "fmt"
@@ -108,15 +107,163 @@ func main() {
 }
 
 func TestGoChunkerEmpty(t *testing.T) {
-	c := &GoChunker{}
+	c := GetChunker("go")
 	chunks := c.Chunk("", nil)
 	if chunks != nil {
 		t.Fatalf("got %d chunks, want nil", len(chunks))
 	}
 }
 
+// TestGoChunkerIgnoresIndentedDeclarations verifies that var/const/func/type
+// declarations inside a function body (indented) do NOT become separate
+// chunk boundaries. This was the root cause of config.go being chopped into
+// 1-line chunks like "var cfg Config" and "var warnings []string".
+func TestGoChunkerIgnoresIndentedDeclarations(t *testing.T) {
+	c := GetChunker("go")
+	fileContent := `package config
+
+type Config struct {
+	Name string
+	Port int
+}
+
+func Load(path string) (Config, []string, error) {
+	var cfg Config
+	var warnings []string
+	const defaultPort = 8080
+
+	if path == "" {
+		return cfg, nil, nil
+	}
+
+	type inner struct {
+		Key string
+	}
+
+	return cfg, warnings, nil
+}
+
+func Validate(cfg Config) error {
+	if cfg.Port <= 0 {
+		return fmt.Errorf("bad port")
+	}
+	return nil
+}
+`
+
+	hunks := []Hunk{
+		{Header: "@@ -0,0 +1,30 @@", BodyLines: []string{"+package config", "+", "+type Config struct {", "+\tName string", "+\tPort int", "+}", "+"}, Hash: "h1"},
+		{Header: "@@ -0,0 +9,22 @@", BodyLines: []string{"+func Load(path string) (Config, []string, error) {", "+\tvar cfg Config", "+\tvar warnings []string", "+\tconst defaultPort = 8080", "+", "+\tif path == \"\" {", "+\t\treturn cfg, nil, nil", "+\t}", "+", "+\ttype inner struct {", "+\t\tKey string", "+\t}", "+", "+\treturn cfg, warnings, nil", "+}"}, Hash: "h2"},
+		{Header: "@@ -0,0 +31,8 @@", BodyLines: []string{"+func Validate(cfg Config) error {", "+\tif cfg.Port <= 0 {", "+\t\treturn fmt.Errorf(\"bad port\")", "+\t}", "+\treturn nil", "+}"}, Hash: "h3"},
+	}
+
+	chunks := c.Chunk(fileContent, hunks)
+
+	// Should be exactly 3 chunks: Config struct, Load func, Validate func.
+	// The indented var/const/type declarations inside Load must NOT
+	// become separate boundaries.
+	if len(chunks) != 3 {
+		t.Fatalf("got %d chunks, want 3", len(chunks))
+	}
+
+	expected := []struct {
+		sig   string
+		start int
+		end   int
+	}{
+		{"type Config struct {", 3, 7},
+		{"func Load(path string) (Config, []string, error) {", 8, 23},
+		{"func Validate(cfg Config) error {", 24, 29},
+	}
+
+	for i, want := range expected {
+		ch := chunks[i]
+		if ch.Signature != want.sig {
+			t.Errorf("chunk[%d].Signature = %q, want %q", i, ch.Signature, want.sig)
+		}
+		if ch.StartLine != want.start {
+			t.Errorf("chunk[%d].StartLine = %d, want %d", i, ch.StartLine, want.start)
+		}
+		if ch.EndLine != want.end {
+			t.Errorf("chunk[%d].EndLine = %d, want %d", i, ch.EndLine, want.end)
+		}
+	}
+}
+
+// TestGoChunkerSingleHunkSpansMultipleChunks verifies that when a single
+// large hunk covers an entire new file, it gets assigned to every chunk
+// whose range it overlaps. The renderChunks filter then shows only the
+// relevant portion per chunk, avoiding visual duplication.
+func TestGoChunkerSingleHunkSpansMultipleChunks(t *testing.T) {
+	c := GetChunker("go")
+	fileContent := `func foo() {
+	fmt.Println("foo")
+}
+
+func bar() {
+	fmt.Println("bar")
+}
+
+func baz() {
+	fmt.Println("baz")
+}
+`
+
+	// Single hunk covering the entire file.
+	hunks := []Hunk{
+		{Header: "@@ -0,0 +1,13 @@", BodyLines: []string{
+			"+func foo() {",
+			"+\tfmt.Println(\"foo\")",
+			"+}",
+			"+",
+			"+func bar() {",
+			"+\tfmt.Println(\"bar\")",
+			"+}",
+			"+",
+			"+func baz() {",
+			"+\tfmt.Println(\"baz\")",
+			"+}",
+		}, Hash: "h1"},
+	}
+
+	chunks := c.Chunk(fileContent, hunks)
+
+	// 3 top-level functions → 3 chunks. Single hunk assigned to all.
+	if len(chunks) != 3 {
+		t.Fatalf("got %d chunks, want 3", len(chunks))
+	}
+
+	for i, ch := range chunks {
+		if len(ch.HunkIdxs) != 1 || ch.HunkIdxs[0] != 0 {
+			t.Errorf("chunk[%d].HunkIdxs = %v, want [0]", i, ch.HunkIdxs)
+		}
+	}
+
+	expected := []struct {
+		sig   string
+		start int
+		end   int
+	}{
+		{"func foo() {", 1, 4},
+		{"func bar() {", 5, 8},
+		{"func baz() {", 9, 11},
+	}
+	for i, want := range expected {
+		ch := chunks[i]
+		if ch.Signature != want.sig {
+			t.Errorf("chunk[%d].Signature = %q, want %q", i, ch.Signature, want.sig)
+		}
+		if ch.StartLine != want.start {
+			t.Errorf("chunk[%d].StartLine = %d, want %d", i, ch.StartLine, want.start)
+		}
+		if ch.EndLine != want.end {
+			t.Errorf("chunk[%d].EndLine = %d, want %d", i, ch.EndLine, want.end)
+		}
+	}
+}
+
 func TestTypeScriptChunker(t *testing.T) {
-	c := &TypeScriptChunker{}
+	c := GetChunker("typescript")
 	if c.Name() != "typescript" {
 		t.Errorf("Name() = %q, want %q", c.Name(), "typescript")
 	}
@@ -158,10 +305,10 @@ export function formatUser(user: User): string {
 
 	chunks := c.Chunk(fileContent, hunks)
 
-	// One-chunk-per-hunk: ts1 (line 1) → class UserService, ts2 (line 16)
-	// → interface User, ts3 (line 24) → formatUser. Result: 3 chunks.
-	if len(chunks) != 3 {
-		t.Fatalf("got %d chunks, want 3", len(chunks))
+	// Tree-sitter detects lexical_declaration (const/let) as a boundary,
+	// so export const DEFAULT_PAGE_SIZE is also a chunk. Result: 5 chunks.
+	if len(chunks) != 5 {
+		t.Fatalf("got %d chunks, want 5", len(chunks))
 	}
 
 	expected := []struct {
@@ -170,6 +317,8 @@ export function formatUser(user: User): string {
 		{"export class UserService {"},
 		{"export interface User {"},
 		{"export type CreateUserInput = Omit<User, \"id\">;"},
+		{"export const DEFAULT_PAGE_SIZE = 20;"},
+		{"export function formatUser(user: User): string {"},
 	}
 
 	for i, want := range expected {
@@ -180,7 +329,7 @@ export function formatUser(user: User): string {
 }
 
 func TestPythonChunker(t *testing.T) {
-	c := &PythonChunker{}
+	c := GetChunker("python")
 	if c.Name() != "python" {
 		t.Errorf("Name() = %q, want %q", c.Name(), "python")
 	}
@@ -208,8 +357,10 @@ def format_user(user):
 
 	chunks := c.Chunk(fileContent, hunks)
 
-	// One-chunk-per-hunk: py1 (line 1) → class UserService, py2 (line 13)
-	// → format_user. Result: 2 chunks.
+	// Tree-sitter only detects top-level declarations. Methods inside
+	// a class (def __init__, def get_user, def create_user) are NOT
+	// top-level — they're children of class_definition. So we get 2
+	// chunks: the class itself and the standalone function.
 	if len(chunks) != 2 {
 		t.Fatalf("got %d chunks, want 2", len(chunks))
 	}
@@ -301,8 +452,8 @@ func TestChunkerRegistry(t *testing.T) {
 	}
 
 	// Unknown language returns nil.
-	if c := GetChunker("rust"); c != nil {
-		t.Errorf("GetChunker(\"rust\") = %v, want nil", c)
+	if c := GetChunker("cobol"); c != nil {
+		t.Errorf("GetChunker(\"cobol\") = %v, want nil", c)
 	}
 
 	// RegisteredChunkers returns the defaults.
@@ -355,7 +506,7 @@ func modified() {
 		{Header: "@@ -0,0 +13,3 @@", BodyLines: []string{"+func modified() {", `+\tfmt.Println("modified")`, "+}"}, Hash: "h2"},
 	}
 
-	c := &GoChunker{}
+	c := GetChunker("go")
 	chunks := c.Chunk(fileContent, hunks)
 
 	// Should only return 2 chunks — the ones with hunks.

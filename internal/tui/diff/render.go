@@ -713,19 +713,50 @@ func renderChunks(chunks []corediff.Chunk, hunks []corediff.Hunk, marks map[stri
 		if isExpanded {
 			for _, hi := range c.HunkIdxs {
 				h := hunks[hi]
+				r := parseHunkRange(h.Header)
+
+				// Pre-check: does this hunk have any file lines within the
+				// chunk's range? If not, skip the hunk entirely to avoid
+				// rendering a header with no visible content.
+				fileLine := r.newStart
+				hasVisible := false
+				for _, l := range h.BodyLines {
+					if len(l) == 0 || l[0] != '-' {
+						if fileLine >= c.StartLine && fileLine <= c.EndLine {
+							hasVisible = true
+							break
+						}
+					}
+					if len(l) == 0 || l[0] != '-' {
+						fileLine++
+					}
+				}
+				if !hasVisible {
+					continue
+				}
+
 				// Render hunk header (without mark, since chunk has the mark).
 				hunkHeader := h.Header
 				b.WriteString(lineNumStyle.Render("  "+hunkHeader) + "\n")
 				lineMap = append(lineMap, 0)
 				lineNum++
 
-				r := parseHunkRange(h.Header)
-				fileLine := r.newStart
+				r2 := parseHunkRange(h.Header)
+				fileLine = r2.newStart
 				for _, line := range h.BodyLines {
 					cur := fileLine
 					isFile := true
 					if len(line) > 0 && line[0] == '-' {
 						isFile = false
+					}
+
+					// Filter: skip lines outside this chunk's range.
+					if isFile && (fileLine < c.StartLine || fileLine > c.EndLine) {
+						fileLine++
+						continue
+					}
+					if !isFile && (fileLine < c.StartLine-1 || fileLine > c.EndLine) {
+						continue
 					}
 
 					prefix := ""
