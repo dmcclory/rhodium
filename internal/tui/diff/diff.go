@@ -208,6 +208,8 @@ type Model struct {
 	// Awaiting user ack before advancing the brain.
 	forgetMode bool
 	forgetMsg  string
+
+	highlightStyle string
 }
 
 func New() Model {
@@ -393,6 +395,10 @@ func (m *Model) Update(msg tea.Msg, b Brain, globals []keys.Binding) tea.Cmd {
 // file. If the PR head has moved since this file was last reviewed we
 // enter catch-up mode: fetch only the delta and show that instead of the
 // full PR diff.
+func (m *Model) SetHighlightStyle(style string) {
+	m.highlightStyle = style
+}
+
 func (m *Model) Open(b Brain, pr *gh.PR, fc gh.FileChange, ghInline []gh.Comment) tea.Cmd {
 	m.pr = pr
 	m.file = fc.Path
@@ -624,12 +630,15 @@ func reconstructFromPatch(patch string) string {
 		if len(line) == 0 {
 			continue
 		}
+		if strings.HasPrefix(line, "+++ ") {
+			continue // skip +++ b/file header (starts with +, not content)
+		}
 		switch line[0] {
 		case '+':
 			lines = append(lines, line[1:])
 		case ' ':
 			lines = append(lines, line[1:])
-		// Skip -, @@, ---, +++, diff --git lines.
+		// Skip -, @@, ---, diff --git lines.
 		}
 	}
 	return strings.Join(lines, "\n")
@@ -785,8 +794,9 @@ func (m *Model) onBlobLoaded(msg BlobLoadedMsg) tea.Cmd {
 	if m.file != "" {
 		content := msg.Content
 		filename := m.file
+		style := m.highlightStyle
 		cmd := func() tea.Msg {
-			hl := corediff.NewHighlighter(content, filename)
+			hl := corediff.NewHighlighter(content, filename, style)
 			return HighlighterLoadedMsg{Highlighter: hl}
 		}
 		return tea.Batch(cmd)

@@ -22,6 +22,9 @@ type Config struct {
 	// on startup when left blank.
 	GitHubUser string      `json:"github_user,omitempty"`
 	Merge      MergeConfig `json:"merge,omitempty"`
+	// HighlightStyle is the chroma style name for syntax highlighting in the
+	// diff view. Defaults to "pygments" if empty.
+	HighlightStyle string `json:"highlight_style,omitempty"`
 	// Statuses is the list of review statuses the user can cycle through
 	// when setting a custom status on a PR. Empty → defaults below.
 	Statuses []string `json:"statuses,omitempty"`
@@ -101,6 +104,13 @@ func (c *Config) MergeMethodResolved() string {
 		return c.Merge.DefaultMethod
 	}
 	return "squash"
+}
+
+func (c *Config) HighlightStyleResolved() string {
+	if c.HighlightStyle != "" {
+		return c.HighlightStyle
+	}
+	return "dracula" // default
 }
 
 // defaultStatuses ships built-in so the `S` status key works without user config.

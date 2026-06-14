@@ -14,7 +14,7 @@ func main() {
 	fmt.Println("hello")
 }
 `
-	hl := NewHighlighter(content, "main.go")
+	hl := NewHighlighter(content, "main.go", "pygments")
 	if hl == nil {
 		t.Fatal("NewHighlighter returned nil for .go file")
 	}
@@ -39,7 +39,7 @@ func main() {
 
 func TestNewHighlighterTypeScript(t *testing.T) {
 	content := "export function greet(name: string): string {\n  return `Hello, ${name}!`;\n}\n"
-	hl := NewHighlighter(content, "greet.ts")
+	hl := NewHighlighter(content, "greet.ts", "pygments")
 	if hl == nil {
 		t.Fatal("NewHighlighter returned nil for .ts file")
 	}
@@ -52,7 +52,7 @@ func TestNewHighlighterPython(t *testing.T) {
 	content := `def greet(name: str) -> str:
     return f"Hello, {name}!"
 `
-	hl := NewHighlighter(content, "greet.py")
+	hl := NewHighlighter(content, "greet.py", "pygments")
 	if hl == nil {
 		t.Fatal("NewHighlighter returned nil for .py file")
 	}
@@ -63,14 +63,14 @@ func TestNewHighlighterPython(t *testing.T) {
 
 func TestNewHighlighterUnknownLanguage(t *testing.T) {
 	content := `some unknown content`
-	hl := NewHighlighter(content, "file.xyz")
+	hl := NewHighlighter(content, "file.xyz", "pygments")
 	if hl != nil {
 		t.Errorf("NewHighlighter for .xyz returned non-nil, want nil")
 	}
 }
 
 func TestNewHighlighterEmptyContent(t *testing.T) {
-	hl := NewHighlighter("", "main.go")
+	hl := NewHighlighter("", "main.go", "pygments")
 	if hl == nil {
 		t.Fatal("NewHighlighter returned nil for empty .go file")
 	}
@@ -82,7 +82,7 @@ func TestNewHighlighterEmptyContent(t *testing.T) {
 func TestHighlighterLineOutOfRange(t *testing.T) {
 	content := `package main
 `
-	hl := NewHighlighter(content, "main.go")
+	hl := NewHighlighter(content, "main.go", "pygments")
 	if hl == nil {
 		t.Fatal("NewHighlighter returned nil")
 	}
@@ -115,7 +115,7 @@ func TestNewHighlighterByFilename(t *testing.T) {
 	content := "x := 1\n"
 	for _, tt := range tests {
 		t.Run(tt.filename, func(t *testing.T) {
-			hl := NewHighlighter(content, tt.filename)
+			hl := NewHighlighter(content, tt.filename, "pygments")
 			if tt.wantNil && hl != nil {
 				t.Errorf("NewHighlighter(%q) = non-nil, want nil", tt.filename)
 			}

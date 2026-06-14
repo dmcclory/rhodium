@@ -17,7 +17,7 @@ type Highlighter struct {
 // NewHighlighter tokenizes the full file content and returns a highlighter
 // with pre-rendered terminal escape sequences for each line. Returns nil
 // if no lexer matches the filename.
-func NewHighlighter(fileContent, filename string) *Highlighter {
+func NewHighlighter(fileContent, filename, styleName string) *Highlighter {
 	lexer := lexers.Match(filename)
 	if lexer == nil {
 		return nil
@@ -29,11 +29,11 @@ func NewHighlighter(fileContent, filename string) *Highlighter {
 		return nil
 	}
 
-	// Format to terminal escape sequences using the "swapoff" style
+	// Format to terminal escape sequences using the configured style
 	// which provides realistic language-aware colors on dark terminals.
 	var buf strings.Builder
 	formatter := formatters.TTY256
-	style := styles.Get("swapoff")
+	style := styles.Get(styleName)
 	if style == nil {
 		style = styles.Fallback
 	}

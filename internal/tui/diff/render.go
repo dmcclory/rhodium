@@ -832,14 +832,16 @@ func renderChunks(chunks []corediff.Chunk, hunks []corediff.Hunk, marks map[stri
 // formatChunkHeader builds the display line for one chunk.
 func formatChunkHeader(mark string, c corediff.Chunk, allMarked bool, focused bool) string {
 	sig := chunkSigStyle.Render(c.Signature)
-	rangeStr := fmt.Sprintf("(%d-%d)", c.StartLine, c.EndLine)
 
-	var complexityStr string
+	var rangeStr string
 	if c.Complexity > 5 {
-		complexityStr = " " + chunkComplexityStyle.Render(fmt.Sprintf("⚠ %d", c.Complexity))
+		rangeStr = fmt.Sprintf("(lines %d-%d, %s)", c.StartLine, c.EndLine,
+			chunkComplexityStyle.Render(fmt.Sprintf("complexity: %d", c.Complexity)))
+	} else {
+		rangeStr = fmt.Sprintf("(lines %d-%d)", c.StartLine, c.EndLine)
 	}
 
-	content := fmt.Sprintf("  %s %s %s%s", mark, sig, rangeStr, complexityStr)
+	content := fmt.Sprintf("  %s %s %s", mark, sig, rangeStr)
 	if focused {
 		return chunkFocusedStyle.Render(content)
 	}

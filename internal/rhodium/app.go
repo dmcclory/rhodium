@@ -129,6 +129,7 @@ func newApp(cfg *Config, b *brain.Brain) *app {
 	}
 	a.files.AgentBindings = agentBindings(a)
 	a.diff.AgentBindings = agentBindings(a)
+	a.diff.SetHighlightStyle(a.cfg.HighlightStyleResolved())
 
 	cached := b.CachedPRs()
 	if len(cached) > 0 {
