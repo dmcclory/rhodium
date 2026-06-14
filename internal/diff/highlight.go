@@ -32,7 +32,7 @@ func NewHighlighter(fileContent, filename string) *Highlighter {
 	// Format to terminal escape sequences using the "swapoff" style
 	// which provides realistic language-aware colors on dark terminals.
 	var buf strings.Builder
-	formatter := formatters.TTY8
+	formatter := formatters.TTY256
 	style := styles.Get("swapoff")
 	if style == nil {
 		style = styles.Fallback
