@@ -7,6 +7,7 @@ import (
 	"rhodium/internal/tui/comments"
 	tuidiff "rhodium/internal/tui/diff"
 	"rhodium/internal/tui/files"
+	glogview "rhodium/internal/tui/glog"
 	"rhodium/internal/tui/help"
 	"rhodium/internal/tui/keys"
 	"rhodium/internal/tui/merge"
@@ -88,6 +89,7 @@ type app struct {
 	todo     todo.Model
 	prs      prs.Model
 	files    files.Model
+	glog     glogview.Model
 	diff     tuidiff.Model
 	comments comments.Model
 	help     help.Model
@@ -112,20 +114,21 @@ type app struct {
 
 func newApp(cfg *Config, b *brain.Brain) *app {
 	a := &app{
-		cfg:      cfg,
-		brain:    b,
-		layout:   layout{activeView: router.RouteTodo},
-		todo:     todo.New(),
-		prs:      prs.New(),
-		files:    files.New(),
-		diff:     tuidiff.New(),
-		comments: comments.New(),
-		help:     help.New(),
+		cfg:          cfg,
+		brain:        b,
+		layout:       layout{activeView: router.RouteTodo},
+		todo:         todo.New(),
+		prs:          prs.New(),
+		files:        files.New(),
+		glog:         glogview.New(),
+		diff:         tuidiff.New(),
+		comments:     comments.New(),
+		help:         help.New(),
 		review:       review.New(),
 		merge:        merge.New(),
 		statusPicker: statuspicker.New(cfg.StatusesResolved()),
-		cache:    newCache(),
-		session:  newSession(),
+		cache:        newCache(),
+		session:      newSession(),
 	}
 	a.files.AgentBindings = agentBindings(a)
 	a.diff.AgentBindings = agentBindings(a)
@@ -166,6 +169,8 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.onPRsLoaded(m)
 	case filesLoadedMsg:
 		return a, a.onFilesLoaded(m)
+	case commitsLoadedMsg:
+		return a, a.onCommitsLoaded(m)
 	case batchFilesLoadedMsg:
 		return a, a.onBatchFilesLoaded(m)
 	case batchCommentsLoadedMsg:
@@ -219,6 +224,9 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case router.NavigatedMsg:
 		a.layout.focus(m.To)
+		if m.To == router.RouteGlog {
+			return a, a.enterGlog()
+		}
 		return a, nil
 
 	case todo.OpenPRMsg:
@@ -309,6 +317,8 @@ func (a *app) View() string {
 		body = a.prs.View()
 	case router.RouteFiles:
 		body = a.files.View()
+	case router.RouteGlog:
+		body = a.glog.View()
 	case router.RouteDiff:
 		body = a.diff.View()
 	case router.RouteComments:
@@ -348,6 +358,9 @@ func (a *app) renderHelp() string {
 	case router.RouteFiles:
 		bindings = a.files.Bindings()
 		label = "Files"
+	case router.RouteGlog:
+		bindings = a.glog.Bindings()
+		label = "Commits"
 	case router.RouteDiff:
 		bindings = a.diff.Bindings()
 		label = "Diff"
@@ -385,6 +398,8 @@ func (a *app) routeKey(key tea.KeyMsg) tea.Cmd {
 		return a.prs.Update(key, globalBindings(a))
 	case router.RouteFiles:
 		return a.files.Update(key, globalBindings(a))
+	case router.RouteGlog:
+		return a.glog.Update(key, globalBindings(a))
 	case router.RouteDiff:
 		return a.diff.Update(key, a.brain, globalBindings(a))
 	case router.RouteComments:
@@ -401,6 +416,8 @@ func (a *app) routeToActive(msg tea.Msg) tea.Cmd {
 		return a.prs.Update(msg, globalBindings(a))
 	case router.RouteFiles:
 		return a.files.Update(msg, globalBindings(a))
+	case router.RouteGlog:
+		return a.glog.Update(msg, globalBindings(a))
 	case router.RouteDiff:
 		return a.diff.Update(msg, a.brain, globalBindings(a))
 	case router.RouteComments:
@@ -415,6 +432,7 @@ func (a *app) relayout() {
 	a.todo.Resize(listW, listH)
 	a.prs.Resize(listW, listH)
 	a.files.Resize(listW, listH)
+	a.glog.Resize(listW, listH)
 	a.diff.Resize(listW, listH)
 	a.diff.SetLayoutSize(a.layout.width, a.layout.height)
 	a.comments.Resize(listW, listH)
@@ -472,11 +490,17 @@ func (a *app) openPR(pr gh.PR) tea.Cmd {
 	if _, cached := a.cache.prFiles[key]; cached {
 		a.rebuildFiles()
 		a.files.SetTitle(fmt.Sprintf("Files in %s#%d", pr.Repo, pr.Number))
-		return tea.Batch(cmds...)
+	} else {
+		a.files.SetTitle(fmt.Sprintf("Files in %s#%d (loading...)", pr.Repo, pr.Number))
+		a.files.ClearItems()
+		cmds = append(cmds, loadFilesCmd(pr))
 	}
-	a.files.SetTitle(fmt.Sprintf("Files in %s#%d (loading...)", pr.Repo, pr.Number))
-	a.files.ClearItems()
-	cmds = append(cmds, loadFilesCmd(pr))
+	// When the configured default lens is "commits", land on glog instead of
+	// files. Files still load in the background (auto-advance, prs counts).
+	if a.cfg.DefaultPRViewResolved() == "commits" {
+		a.layout.focus(router.RouteGlog)
+		cmds = append(cmds, a.enterGlog())
+	}
 	return tea.Batch(cmds...)
 }
 

@@ -16,6 +16,7 @@ type cache struct {
 	freshKeys  map[string]bool            // confirmed by latest repo listing
 	prFiles    map[string][]gh.FileChange // pr key → file list
 	prComments map[string][]gh.Comment    // pr key → comments
+	prCommits  map[string]commitData      // pr key → glog commits + per-commit files
 
 	// commentsLastSeenAt records the PR's GitHub updatedAt at the time
 	// comments were last fetched. Used by the remote-refresh tick to skip
@@ -23,11 +24,20 @@ type cache struct {
 	commentsLastSeenAt map[string]string // pr key → updatedAt timestamp
 }
 
+// commitData is a PR's cached glog input: the commit list plus the files
+// each commit introduced. Immutable by commit SHA, so it's cached for the
+// session; the rollup (which depends on mutable marks) is recomputed on entry.
+type commitData struct {
+	commits []gh.Commit
+	files   map[string][]gh.FileChange // commit SHA → files
+}
+
 func newCache() cache {
 	return cache{
 		freshKeys:          map[string]bool{},
 		prFiles:            map[string][]gh.FileChange{},
 		prComments:         map[string][]gh.Comment{},
+		prCommits:          map[string]commitData{},
 		commentsLastSeenAt: map[string]string{},
 	}
 }
@@ -67,6 +77,7 @@ func (c *cache) dropPR(key string) {
 	delete(c.freshKeys, key)
 	delete(c.prFiles, key)
 	delete(c.prComments, key)
+	delete(c.prCommits, key)
 	delete(c.commentsLastSeenAt, key)
 }
 

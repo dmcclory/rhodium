@@ -28,6 +28,10 @@ type Config struct {
 	// Statuses is the list of review statuses the user can cycle through
 	// when setting a custom status on a PR. Empty → defaults below.
 	Statuses []string `json:"statuses,omitempty"`
+	// DefaultPRView is the lens a PR opens on: "files" (default) or
+	// "commits" (the glog commit list). The `g` key toggles per-session
+	// regardless of this default.
+	DefaultPRView string `json:"default_pr_view,omitempty"`
 }
 
 // Agent is a coding-assistant binary (claude, opencode, etc). Actions pick
@@ -111,6 +115,15 @@ func (c *Config) HighlightStyleResolved() string {
 		return c.HighlightStyle
 	}
 	return "dracula" // default
+}
+
+// DefaultPRViewResolved returns the lens a PR opens on, defaulting to "files".
+func (c *Config) DefaultPRViewResolved() string {
+	switch c.DefaultPRView {
+	case "files", "commits":
+		return c.DefaultPRView
+	}
+	return "files"
 }
 
 // defaultStatuses ships built-in so the `S` status key works without user config.

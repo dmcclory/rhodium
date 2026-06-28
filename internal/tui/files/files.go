@@ -49,11 +49,11 @@ type RebuildNotesMsg struct{}
 // Item is one row in the file list. The app populates these via Rebuild
 // so this package stays unaware of brain state.
 type Item struct {
-	File            gh.FileChange
-	Status          brain.FileStatus
-	NoteCount       int // local Rhodium notes
-	GHCommentCount  int // GitHub inline comments from other people
-	NeedsCatchUp    bool // PR head moved since this file was last reviewed
+	File           gh.FileChange
+	Status         brain.FileStatus
+	NoteCount      int  // local Rhodium notes
+	GHCommentCount int  // GitHub inline comments from other people
+	NeedsCatchUp   bool // PR head moved since this file was last reviewed
 }
 
 func (i Item) Title() string {
@@ -216,6 +216,11 @@ func (m *Model) Bindings() []keys.Binding {
 			Action: func() tea.Cmd {
 				return func() tea.Msg { return OpenCommentsMsg{} }
 			},
+		},
+		{
+			Name: "glog", Keys: []string{"g"},
+			Desc: "commit view", Group: "View",
+			Action: func() tea.Cmd { return router.Navigate(router.RouteGlog) },
 		},
 		{
 			Name: "mark-fully-reviewed", Keys: []string{"M"},

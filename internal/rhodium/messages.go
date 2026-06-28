@@ -20,6 +20,17 @@ type filesLoadedMsg struct {
 	err   error
 }
 
+// commitsLoadedMsg lands after the glog commit fetch (ListPRCommits + a
+// FetchCommitFiles per commit) completes. The raw commits + per-commit files
+// are cached (immutable by SHA); the rollup is recomputed from fresh marks on
+// each glog entry.
+type commitsLoadedMsg struct {
+	pr      gh.PR
+	commits []gh.Commit
+	files   map[string][]gh.FileChange // commit SHA → files it introduced
+	err     error
+}
+
 type prefetchDoneMsg struct{}
 
 // batchFileResult is a single PR's file fetch result, used by both

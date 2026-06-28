@@ -92,12 +92,12 @@ func currentPRHEAD(repo string, number int) (string, error) {
 
 // WorktreeStatus describes the state of a PR's worktree.
 type WorktreeStatus struct {
-	Path          string
-	State         string // "missing", "current", "stale", "error"
-	WorktreeHEAD  string // empty when missing/error
-	PRHEAD        string // empty when missing/error/unknown
-	BehindCount   int    // 0 when current/missing
-	PRState       string // "open", "merged", "closed", "unknown"
+	Path         string
+	State        string // "missing", "current", "stale", "error"
+	WorktreeHEAD string // empty when missing/error
+	PRHEAD       string // empty when missing/error/unknown
+	BehindCount  int    // 0 when current/missing
+	PRState      string // "open", "merged", "closed", "unknown"
 }
 
 // InspectWorktree checks the worktree for a PR and returns its status.

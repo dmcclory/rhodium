@@ -13,6 +13,7 @@ const (
 	RouteTodo     Route = "todo"
 	RoutePRs      Route = "prs"
 	RouteFiles    Route = "files"
+	RouteGlog     Route = "glog"
 	RouteDiff     Route = "diff"
 	RouteComments Route = "comments"
 )
