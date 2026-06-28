@@ -21,7 +21,7 @@ func TestRenderCommitsBadgesAndSummary(t *testing.T) {
 		{Commit: gh.Commit{SHA: "f02bb71facefeed", Title: "fix race", Author: "dan"}, Marked: 0, Total: 1, Status: coreglog.StatusNone},
 	}
 
-	out := stripANSI(renderCommits(pr, commits, 0))
+	out := stripANSI(renderCommits(pr, commits, 0, nil))
 
 	// Header with repo/number and commit count.
 	if !strings.Contains(out, "octo/web#42") || !strings.Contains(out, "3 commits") {
@@ -42,6 +42,50 @@ func TestRenderCommitsBadgesAndSummary(t *testing.T) {
 	// Summary: 1 fully-reviewed commit of 3, 3 marked hunks of 5.
 	if !strings.Contains(out, "reviewed 1/3 commits · 3/5 hunks") {
 		t.Errorf("missing/incorrect summary:\n%s", out)
+	}
+}
+
+func TestRenderExpandedShowsFilesAndHunks(t *testing.T) {
+	commits := []coreglog.CommitRollup{
+		{
+			Commit: gh.Commit{SHA: "a1b9f2cdeadbeef", Title: "extract parser"},
+			Files: []coreglog.FileRollup{
+				{
+					Path: "auth/middleware.go", Additions: 9, Deletions: 22, Marked: 1, Total: 2,
+					Hunks: []coreglog.HunkStatus{
+						{Header: "@@ -1,3 +1,4 @@ func wireRotation() {", Marked: true},
+						{Header: "@@ -10,2 +11,3 @@ func handleExpiry() {", Marked: false},
+					},
+				},
+			},
+			Marked: 1, Total: 2, Status: coreglog.StatusPartial,
+		},
+	}
+
+	collapsed := stripANSI(renderCommits(nil, commits, 0, nil))
+	if strings.Contains(collapsed, "wireRotation") {
+		t.Errorf("collapsed view should not show hunk detail:\n%s", collapsed)
+	}
+
+	expanded := stripANSI(renderCommits(nil, commits, 0, map[int]bool{0: true}))
+	for _, want := range []string{"auth/middleware.go", "+9 −22", "wireRotation", "handleExpiry", "◐ 1/2"} {
+		if !strings.Contains(expanded, want) {
+			t.Errorf("expanded view missing %q in:\n%s", want, expanded)
+		}
+	}
+}
+
+func TestSetCommitsDefaultsToExpanded(t *testing.T) {
+	m := New()
+	commits := []coreglog.CommitRollup{
+		{Commit: gh.Commit{SHA: "c1"}},
+		{Commit: gh.Commit{SHA: "c2"}},
+	}
+	m.SetCommits(nil, commits)
+	for i := range commits {
+		if !m.expanded[i] {
+			t.Errorf("commit %d should default to expanded", i)
+		}
 	}
 }
 

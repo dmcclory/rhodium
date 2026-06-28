@@ -19,13 +19,29 @@ const (
 	StatusAll                   // every markable hunk marked (renders [✓])
 )
 
-// CommitRollup pairs a commit with its review-status overlay.
+// CommitRollup pairs a commit with its review-status overlay. Files carries
+// the per-file/per-hunk detail used to render the inline-expanded view.
 type CommitRollup struct {
 	Commit gh.Commit
+	Files  []FileRollup
 	Marked int // markable hunks of this commit that are marked
 	Total  int // markable hunks this commit introduced
 	Notes  int // notes attributed to this commit (populated by a later pass)
 	Status Status
+}
+
+// FileRollup is one file a commit touched, with its markable hunks.
+type FileRollup struct {
+	Path                 string
+	Additions, Deletions int
+	Hunks                []HunkStatus
+	Marked, Total        int // markable hunks marked / total, for this file
+}
+
+// HunkStatus is one markable hunk and whether it's been marked.
+type HunkStatus struct {
+	Header string // the @@ ... @@ line (often carries the enclosing function)
+	Marked bool
 }
 
 // Rollup computes per-commit review status by intersecting each commit's
@@ -47,20 +63,31 @@ type CommitRollup struct {
 func Rollup(commits []gh.Commit, commitFiles map[string][]gh.FileChange, marksByPath map[string]map[string]int) []CommitRollup {
 	out := make([]CommitRollup, 0, len(commits))
 	for _, c := range commits {
+		var files []FileRollup
 		var marked, total int
 		for _, f := range commitFiles[c.SHA] {
+			fr := FileRollup{Path: f.Path, Additions: f.Additions, Deletions: f.Deletions}
 			for _, h := range diff.ParseHunks(f.Patch) {
 				if !h.IsMarkable() {
 					continue
 				}
-				total++
-				if marksByPath[f.Path][h.Hash] > 0 {
-					marked++
+				isMarked := marksByPath[f.Path][h.Hash] > 0
+				fr.Hunks = append(fr.Hunks, HunkStatus{Header: h.Header, Marked: isMarked})
+				fr.Total++
+				if isMarked {
+					fr.Marked++
 				}
 			}
+			if len(fr.Hunks) == 0 {
+				continue // binary/empty patch — nothing reviewable to show
+			}
+			files = append(files, fr)
+			total += fr.Total
+			marked += fr.Marked
 		}
 		out = append(out, CommitRollup{
 			Commit: c,
+			Files:  files,
 			Marked: marked,
 			Total:  total,
 			Status: statusFor(marked, total),

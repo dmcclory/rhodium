@@ -19,6 +19,8 @@ var (
 	focusedStyle = lipgloss.NewStyle().Reverse(true).Bold(true)
 	summaryStyle = lipgloss.NewStyle().Faint(true)
 	headerStyle  = lipgloss.NewStyle().Bold(true)
+	statsStyle   = lipgloss.NewStyle().Faint(true)
+	hunkStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
 )
 
 // badge renders the per-commit mark rollup glyph.
@@ -68,10 +70,47 @@ func commitRow(c coreglog.CommitRollup) string {
 	return strings.Join(parts, "  ")
 }
 
-// renderCommits produces the collapsed glog body: a header, one node per
-// commit connected by a │ rail, and a progress summary. cursor is the index
-// of the focused commit (rendered reverse-video).
-func renderCommits(pr *gh.PR, commits []coreglog.CommitRollup, cursor int) string {
+// fileLine renders one file row inside an expanded commit: a tree branch,
+// the path, +/- stats, and the file's hunk rollup.
+func fileLine(f coreglog.FileRollup, last bool) string {
+	branch := "├─"
+	if last {
+		branch = "└─"
+	}
+	roll := ""
+	switch {
+	case f.Total == 0:
+	case f.Marked >= f.Total:
+		roll = markedStyle.Render(fmt.Sprintf("✔ %d/%d", f.Marked, f.Total))
+	case f.Marked == 0:
+		roll = fmt.Sprintf("○ %d/%d", f.Marked, f.Total)
+	default:
+		roll = partialStyle.Render(fmt.Sprintf("◐ %d/%d", f.Marked, f.Total))
+	}
+	return fmt.Sprintf("  %s   %s %s%s  %s",
+		railStyle.Render("│"), railStyle.Render(branch), f.Path,
+		statsStyle.Render(fmt.Sprintf("  +%d −%d", f.Additions, f.Deletions)), roll)
+}
+
+// renderExpanded writes a commit's files → hunks tree beneath its row.
+func renderExpanded(b *strings.Builder, c coreglog.CommitRollup) {
+	for fi, f := range c.Files {
+		b.WriteString(fileLine(f, fi == len(c.Files)-1) + "\n")
+		for _, h := range f.Hunks {
+			mark := "[ ]"
+			if h.Marked {
+				mark = markedStyle.Render("[✓]")
+			}
+			b.WriteString("  " + railStyle.Render("│") + "        " + hunkStyle.Render(h.Header) + "  " + mark + "\n")
+		}
+	}
+}
+
+// renderCommits produces the glog body: a header, one node per commit
+// connected by a │ rail, and a progress summary. cursor is the index of the
+// focused commit (rendered reverse-video); commits whose index is in expanded
+// show their files → hunks tree inline.
+func renderCommits(pr *gh.PR, commits []coreglog.CommitRollup, cursor int, expanded map[int]bool) string {
 	var b strings.Builder
 
 	if pr != nil {
@@ -91,6 +130,9 @@ func renderCommits(pr *gh.PR, commits []coreglog.CommitRollup, cursor int) strin
 			row = focusedStyle.Render(row)
 		}
 		b.WriteString("  " + railStyle.Render("●") + "  " + row + "\n")
+		if expanded[i] {
+			renderExpanded(&b, c)
+		}
 		if i < len(commits)-1 {
 			b.WriteString("  " + railStyle.Render("│") + "\n")
 		}

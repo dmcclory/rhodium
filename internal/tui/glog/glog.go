@@ -15,12 +15,13 @@ import (
 )
 
 type Model struct {
-	vp      viewport.Model
-	pr      *gh.PR
-	commits []coreglog.CommitRollup
-	cursor  int // index of the focused commit
-	width   int
-	height  int
+	vp       viewport.Model
+	pr       *gh.PR
+	commits  []coreglog.CommitRollup
+	cursor   int          // index of the focused commit
+	expanded map[int]bool // commit indices shown with their files→hunks tree
+	width    int
+	height   int
 
 	// BackRoute is where `back` (esc/h) returns — the list the PR was
 	// opened from (todo or prs). Set by the app on entry.
@@ -28,7 +29,7 @@ type Model struct {
 }
 
 func New() Model {
-	return Model{vp: viewport.New(0, 0)}
+	return Model{vp: viewport.New(0, 0), expanded: map[int]bool{}}
 }
 
 func (m *Model) Resize(w, h int) {
@@ -43,6 +44,12 @@ func (m *Model) Resize(w, h int) {
 func (m *Model) SetCommits(pr *gh.PR, commits []coreglog.CommitRollup) {
 	m.pr = pr
 	m.commits = commits
+	// Default to fully expanded — a review pass wants every commit's hunks
+	// visible at once; `enter` collapses the ones you've cleared.
+	m.expanded = make(map[int]bool, len(commits))
+	for i := range commits {
+		m.expanded[i] = true
+	}
 	if m.cursor >= len(commits) {
 		m.cursor = 0
 	}
@@ -54,7 +61,7 @@ func (m *Model) PR() *gh.PR { return m.pr }
 func (m *Model) View() string { return m.vp.View() }
 
 func (m *Model) Footer() string {
-	return "glog · ↑/↓: commit  g: files  esc: back"
+	return "glog · ↑/↓: commit  enter: expand  g: files  esc: back"
 }
 
 // Update handles cursor movement directly, routes other keys through this
@@ -82,10 +89,15 @@ func (m *Model) Update(msg tea.Msg, globals []keys.Binding) tea.Cmd {
 	return cmd
 }
 
-// Bindings are this view's navigation keys: back to the originating list and
-// the `g` lens toggle to the files view.
+// Bindings are this view's keys: expand/collapse the focused commit, back to
+// the originating list, and the `g` lens toggle to the files view.
 func (m *Model) Bindings() []keys.Binding {
 	return []keys.Binding{
+		{
+			Name: "expand", Keys: []string{"enter", "l", "right"},
+			Desc: "expand/collapse commit", Group: "View",
+			Action: func() tea.Cmd { m.toggleExpand(); return nil },
+		},
 		{
 			Name: "back", Keys: []string{"esc", "h", "left"},
 			Desc: "back", Group: "Navigate",
@@ -97,6 +109,14 @@ func (m *Model) Bindings() []keys.Binding {
 			Action: func() tea.Cmd { return router.Navigate(router.RouteFiles) },
 		},
 	}
+}
+
+func (m *Model) toggleExpand() {
+	if len(m.commits) == 0 {
+		return
+	}
+	m.expanded[m.cursor] = !m.expanded[m.cursor]
+	m.redraw()
 }
 
 func (m *Model) moveCursor(delta int) {
@@ -114,5 +134,5 @@ func (m *Model) moveCursor(delta int) {
 }
 
 func (m *Model) redraw() {
-	m.vp.SetContent(renderCommits(m.pr, m.commits, m.cursor))
+	m.vp.SetContent(renderCommits(m.pr, m.commits, m.cursor, m.expanded))
 }
